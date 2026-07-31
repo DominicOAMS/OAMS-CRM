@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <!-- Local modal shim (drop-in for the SweetAlert2 API this app uses) -->
+  <script src="/static/swal.js"></script>
+  <!-- SheetJS CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <!-- Manrope font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <div class="brand">
+        <img class="brand-logo" src="/logo" alt="OAMS CRM logo"
+             onload="var f=document.getElementById('brandFallback'); if (f) f.style.display='none';"
+             onerror="this.style.display='none';">
+        <div class="brand-logo brand-logo-fallback" id="brandFallback" aria-hidden="true">O</div>
+        <span class="brand-name">OAMS CRM</span>
+      </div>
+    </div>
+    <ul class="sidebar-nav">
+      <li id="nav-Home" class="active" onclick="switchTab('Home')">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.5 12 4l8 7.5"/><path d="M6 10v9.5h12V10"/></svg></span>
+        <span class="nav-label">Home</span>
+      </li>
+      <li id="nav-Leads" onclick="switchTab('Leads')">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c0-3.4 2.6-5.6 5.5-5.6s5.5 2.2 5.5 5.6"/><path d="M18 8.5v5M15.5 11h5"/></svg></span>
+        <span class="nav-label">Leads</span>
+      </li>
+      <li id="nav-Contacts" onclick="switchTab('Contacts')">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 19.5c0-3.6 3-6 7-6s7 2.4 7 6"/></svg></span>
+        <span class="nav-label">Contacts</span>
+      </li>
+      <li id="nav-Accounts" onclick="switchTab('Accounts')">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3.5" width="11" height="17" rx="1"/><path d="M8 8h3M8 11.5h3M8 15h3"/><path d="M15 20.5V13a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v7.5"/></svg></span>
+        <span class="nav-label">Accounts</span>
+      </li>
+      <li id="nav-Deals" onclick="switchTab('Deals')">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.5 3.5H19a1 1 0 0 1 1 1v6.5a1 1 0 0 1-.3.7l-8 8a1 1 0 0 1-1.4 0l-6.5-6.5a1 1 0 0 1 0-1.4l8-8a1 1 0 0 1 .7-.3Z"/><circle cx="16" cy="8" r="1.4"/></svg></span>
+        <span class="nav-label">Deals</span>
+      </li>
+      <li id="nav-Analytics" onclick="switchTab('Analytics')">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V10M12 20V4M19 20v-7"/></svg></span>
+        <span class="nav-label">Analytics</span>
+      </li>
+      <li id="nav-Documents" onclick="switchTab('Documents')">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5a1.5 1.5 0 0 1 1.5-1.5h3.2a1.5 1.5 0 0 1 1.1.5l1.2 1.3H18.5A1.5 1.5 0 0 1 20 8.3V17.5A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5Z"/></svg></span>
+        <span class="nav-label">Documents</span>
+      </li>
+    </ul>
+  </div>
+
+  <div class="main-content">
+    <div class="top-bar">
+      <h1 id="page-title">Leads</h1>
+      <div class="top-bar-buttons">
+        <button class="btn btn-secondary" id="newDealBtn" style="display:none;">+ New Deal</button>
+        <button class="btn btn-secondary" id="newFolderBtn" style="display:none;">New Folder</button>
+        <button class="btn btn-secondary" id="manageColumnsBtn">Manage Columns</button>
+        <button class="btn" id="importBtn">Import Data</button>
+        <button class="btn" id="uploadDocBtn" style="display:none;">Upload Files</button>
+        <input type="file" id="docFileInput" multiple style="display:none;">
+      </div>
+    </div>
+    <div class="content-area">
+      <div class="home-view" id="homeView" style="display:none;">
+        <div class="kpi-row">
+          <div class="kpi-tile"><div class="kpi-value" id="home-leads">-</div><div class="kpi-label">New Leads</div><div class="kpi-sublabel">past 7 days</div></div>
+          <div class="kpi-tile"><div class="kpi-value" id="home-visits">-</div><div class="kpi-label">Visits Logged</div><div class="kpi-sublabel">past 7 days</div></div>
+          <div class="kpi-tile"><div class="kpi-value" id="home-won">-</div><div class="kpi-label">Deals Won</div><div class="kpi-sublabel">past 7 days</div></div>
+          <div class="kpi-tile"><div class="kpi-value" id="home-won-value">-</div><div class="kpi-label">Won Value</div><div class="kpi-sublabel">past 7 days</div></div>
+        </div>
+        <div class="home-grid">
+          <div class="chart-card home-card">
+            <h3>Follow-ups due <span class="home-count" id="home-followups-count">0</span></h3>
+            <div id="home-followups"></div>
+          </div>
+          <div class="chart-card home-card">
+            <h3>Accounts overdue for a visit <span class="home-count" id="home-overdue-count">0</span></h3>
+            <div id="home-overdue"></div>
+          </div>
+          <div class="chart-card home-card">
+            <h3>Bids awaiting decision too long <span class="home-count" id="home-stale-count">0</span></h3>
+            <div id="home-stale"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-toolbar" id="tableToolbar">
+        <div class="search-box">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input type="text" id="tableSearch" placeholder="Search..." autocomplete="off">
+        </div>
+        <select id="filterColumn" class="filter-select"><option value="">Filter by...</option></select>
+        <select id="filterValue" class="filter-select" style="display:none;"></select>
+        <button class="btn btn-secondary" id="clearFiltersBtn" style="display:none;">Clear</button>
+        <button class="btn btn-secondary" id="findDuplicatesBtn" style="margin-left:auto;">Find Duplicates</button>
+      </div>
+
+      <table class="data-table">
+        <thead>
+          <!-- Dynamically populated -->
+        </thead>
+        <tbody>
+          <!-- Dynamically populated -->
+        </tbody>
+      </table>
+
+      <div class="kanban-toolbar" id="kanbanToolbar" style="display:none;">
+        <select id="kanbanRep" class="filter-select"><option value="">All reps</option></select>
+        <select id="kanbanTerritory" class="filter-select"><option value="">All territories</option></select>
+      </div>
+
+      <div class="kanban-board" id="dealsKanbanView" style="display:none;">
+        <div class="kanban-column" data-stage="Awaiting Decision">
+          <div class="kanban-column-header">
+            <span>Awaiting Decision</span>
+            <span class="badge" id="kanban-count-awaiting-decision">0</span>
+          </div>
+          <div class="kanban-column-body" id="kanban-body-awaiting-decision"
+               ondragover="handleDealDragOver(event)" ondragleave="handleDealDragLeave(event)"
+               ondrop="handleDealDrop(event, 'Awaiting Decision')"></div>
+        </div>
+        <div class="kanban-column" data-stage="Proposed Bid">
+          <div class="kanban-column-header">
+            <span>Proposed Bid</span>
+            <span class="badge" id="kanban-count-proposed-bid">0</span>
+          </div>
+          <div class="kanban-column-body" id="kanban-body-proposed-bid"
+               ondragover="handleDealDragOver(event)" ondragleave="handleDealDragLeave(event)"
+               ondrop="handleDealDrop(event, 'Proposed Bid')"></div>
+        </div>
+        <div class="kanban-column" data-stage="Closed Won">
+          <div class="kanban-column-header">
+            <span>Closed Won</span>
+            <span class="badge" id="kanban-count-closed-won">0</span>
+          </div>
+          <div class="kanban-column-body" id="kanban-body-closed-won"
+               ondragover="handleDealDragOver(event)" ondragleave="handleDealDragLeave(event)"
+               ondrop="handleDealDrop(event, 'Closed Won')"></div>
+        </div>
+        <div class="kanban-column" data-stage="Closed Lost">
+          <div class="kanban-column-header">
+            <span>Closed Lost</span>
+            <span class="badge" id="kanban-count-closed-lost">0</span>
+          </div>
+          <div class="kanban-column-body" id="kanban-body-closed-lost"
+               ondragover="handleDealDragOver(event)" ondragleave="handleDealDragLeave(event)"
+               ondrop="handleDealDrop(event, 'Closed Lost')"></div>
+        </div>
+        <div class="kanban-column stage-other" id="kanban-column-other" style="display:none;">
+          <div class="kanban-column-header">
+            <span>Other</span>
+            <span class="badge" id="kanban-count-other">0</span>
+          </div>
+          <div class="kanban-column-body" id="kanban-body-other"
+               ondragover="handleDealDragOver(event)" ondragleave="handleDealDragLeave(event)"
+               ondrop="handleDealDrop(event, 'Other')"></div>
+        </div>
+      </div>
+
+      <div class="documents-view" id="documentsView" style="display:none;">
+        <div class="doc-breadcrumbs" id="docBreadcrumbs"></div>
+        <div class="doc-grid" id="docGrid"></div>
+      </div>
+
+      <div class="analytics-view" id="analyticsView" style="display:none;">
+        <div class="analytics-controls">
+          <select id="analyticsDateRange" class="filter-select">
+            <option value="this_month">This month</option>
+            <option value="last_month">Last month</option>
+            <option value="this_quarter">This quarter</option>
+            <option value="this_year">This year</option>
+            <option value="all" selected>All time</option>
+          </select>
+          <select id="analyticsRep" class="filter-select"><option value="">All reps</option></select>
+          <select id="analyticsTerritory" class="filter-select"><option value="">All territories</option></select>
+        </div>
+        <div class="kpi-row">
+          <div class="kpi-tile">
+            <div class="kpi-value" id="kpi-total-leads">-</div>
+            <div class="kpi-label">Total Leads</div>
+            <div class="kpi-delta" id="kpi-total-leads-delta"></div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-value" id="kpi-won-value">-</div>
+            <div class="kpi-label">Total Won</div>
+            <div class="kpi-delta" id="kpi-won-value-delta"></div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-value" id="kpi-win-rate">-</div>
+            <div class="kpi-label">Win Rate</div>
+            <div class="kpi-sublabel" id="kpi-win-rate-sub"></div>
+            <div class="kpi-delta" id="kpi-win-rate-delta"></div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-value" id="kpi-visits-30">-</div>
+            <div class="kpi-label">Visits</div>
+            <div class="kpi-delta" id="kpi-visits-delta"></div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-value" id="kpi-open-deals">-</div>
+            <div class="kpi-label">Open Deals</div>
+            <div class="kpi-sublabel">Current</div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-value" id="kpi-pipeline-value">-</div>
+            <div class="kpi-label">Pipeline Value</div>
+            <div class="kpi-sublabel">Current</div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-value" id="kpi-avg-deal-size">-</div>
+            <div class="kpi-label">Avg Deal Size</div>
+            <div class="kpi-sublabel">Current</div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-value" id="kpi-overdue">-</div>
+            <div class="kpi-label">Overdue Accounts</div>
+            <div class="kpi-sublabel">No visit in 30+ days</div>
+          </div>
+        </div>
+        <div class="chart-grid">
+          <div class="chart-card">
+            <h3>Deals by Stage</h3>
+            <div class="chart-canvas-wrap"><canvas id="chart-deals-by-stage"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Won vs. Lost</h3>
+            <div class="chart-canvas-wrap"><canvas id="chart-win-loss"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Leads by Source</h3>
+            <div class="chart-canvas-wrap"><canvas id="chart-leads-by-source"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Leads by Status</h3>
+            <div class="chart-canvas-wrap"><canvas id="chart-leads-by-status"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Deals Closed per Month</h3>
+            <div class="chart-canvas-wrap"><canvas id="chart-deals-closed-per-month"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Visits per Month</h3>
+            <div class="chart-canvas-wrap"><canvas id="chart-visits-per-month"></canvas></div>
+          </div>
+        </div>
+
+        <div class="chart-card" style="margin-top:20px;">
+          <h3>Accounts overdue for a visit</h3>
+          <div id="overdueList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>

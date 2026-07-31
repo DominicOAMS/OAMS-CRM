@@ -1,0 +1,14 @@
+# Local data — don't commit
+crm.db
+crm.db-journal
+storage/
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Vercel
+.vercel

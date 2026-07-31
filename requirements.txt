@@ -1,0 +1,5 @@
+Flask==3.0.3
+SQLAlchemy==2.0.32
+python-dateutil==2.9.0.post0
+PyMySQL==1.1.1
+

@@ -5,19 +5,20 @@ OAMS CRM — Python/Flask app backed by a local database (SQLAlchemy) and local 
 `/api/rpc`             mirrors the old google.script.run: {fn, args[]} -> function(*args).
 `/health`              confirms the database is reachable.
 `/logo`                serves the local brand logo (falls back to an "O" badge).
-`/files/download`      streams a stored attachment/document file.
+`/files/blob/<id>`     streams a stored attachment (DB blob).
+`/files/doc/<id>`      streams a stored Documents-manager file (DB blob).
 `/webhook`             optional lead intake.
 
 Run locally:  pip install -r requirements.txt  &&  python app.py   (no accounts needed)
 """
 
-import os
 import traceback
-from flask import Flask, request, jsonify, render_template, Response, send_file, abort
+from flask import Flask, request, jsonify, render_template, Response, abort
 
 import logic
 import drive
 import sheets
+from sheets import SessionLocal, Blob, DocNode
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
@@ -81,15 +82,26 @@ def rpc():
         return jsonify({"ok": False, "error": str(e)}), 200  # 200 so the shim shows the message
 
 
-@app.route("/files/download")
-def files_download():
-    """Stream a stored file. `path` is relative to the storage dir; safe-joined to
-    block traversal outside it."""
-    rel = request.args.get("path", "")
-    target = drive._resolve_under(drive.STORAGE_DIR, rel)
-    if not target or not os.path.isfile(target):
-        abort(404)
-    return send_file(target, as_attachment=False, download_name=os.path.basename(target))
+@app.route("/files/blob/<int:blob_id>")
+def files_blob(blob_id):
+    """Stream a stored attachment from the database."""
+    with SessionLocal() as s:
+        b = s.get(Blob, blob_id)
+        if not b:
+            abort(404)
+        return Response(b.data, mimetype=b.mime_type or "application/octet-stream",
+                         headers={"Content-Disposition": 'inline; filename="%s"' % (b.name or "file")})
+
+
+@app.route("/files/doc/<int:node_id>")
+def files_doc(node_id):
+    """Stream a stored Documents-manager file from the database."""
+    with SessionLocal() as s:
+        n = s.get(DocNode, node_id)
+        if not n or n.kind != "file":
+            abort(404)
+        return Response(n.data, mimetype=n.mime_type or "application/octet-stream",
+                         headers={"Content-Disposition": 'inline; filename="%s"' % (n.name or "file")})
 
 
 @app.route("/health")

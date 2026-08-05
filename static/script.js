@@ -49,6 +49,22 @@
 
   document.addEventListener('DOMContentLoaded', () => switchTab('Home'));
 
+  // Mobile sidebar: off-canvas below the CSS breakpoint, toggled by the hamburger
+  // button and closed by the backdrop or by picking a nav item.
+  function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarBackdrop').classList.remove('show');
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    const toggle = document.getElementById('sidebarToggle');
+    const backdrop = document.getElementById('sidebarBackdrop');
+    if (toggle) toggle.addEventListener('click', () => {
+      document.getElementById('sidebar').classList.toggle('open');
+      backdrop.classList.toggle('show');
+    });
+    if (backdrop) backdrop.addEventListener('click', closeSidebar);
+  });
+
   // Minimal HTML-escaping for the new innerHTML-building code in this file (Kanban
   // cards, dynamic forms, attachments, analytics). The pre-existing table rendering
   // below does not escape cell values either - this doesn't retrofit that, it just
@@ -78,6 +94,7 @@
     document.querySelectorAll('.sidebar-nav li').forEach(li => li.classList.remove('active'));
     const activeTab = document.getElementById('nav-' + viewName);
     if (activeTab) activeTab.classList.add('active');
+    closeSidebar(); // no-op on desktop widths, closes the off-canvas menu on mobile
 
     showViewContainer(viewName);
     resetTableFilters(); // a fresh tab starts unfiltered

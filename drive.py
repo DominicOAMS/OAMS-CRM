@@ -1,42 +1,24 @@
 """
-Local file storage — replaces the old Google Drive layer, keeping the same function
-names so logic.py and app.py are unchanged. Files live under config.STORAGE_DIR:
+Database-backed file storage — attachments and Documents-manager files are stored as
+blobs in the same SQLAlchemy database as the rest of the CRM data (see sheets.py),
+instead of on local disk. Local disk doesn't persist between Vercel serverless
+invocations, so this is what keeps uploaded files alive on the deployed site; the same
+code also works unchanged against the local SQLite file.
 
-  storage/attachments/<EntityType>-<EntityId>/<uuid>__<filename>
-  storage/documents/<user folder tree>
-
-Files are served to the browser via app.py's /files/download?path=... route.
+Function names/signatures are unchanged from the old local-disk version, so logic.py and
+app.py's RPC registry don't need to change. Files are served via app.py's
+/files/blob/<id> (attachments) and /files/doc/<id> (documents) routes.
 """
 
 import os
 import re
-import shutil
-import uuid
 import base64
 import mimetypes
-from datetime import datetime
-from urllib.parse import quote
 
 import config
+from sheets import SessionLocal, Blob, DocNode
 
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10MB
-
-STORAGE_DIR = config.STORAGE_DIR
-ATTACHMENTS_DIR = os.path.join(STORAGE_DIR, "attachments")
-DOCUMENTS_DIR = os.path.join(STORAGE_DIR, "documents")
-
-
-def _ensure_dirs():
-    os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
-    os.makedirs(DOCUMENTS_DIR, exist_ok=True)
-
-
-def _rel_to_storage(abspath):
-    return os.path.relpath(abspath, STORAGE_DIR).replace("\\", "/")
-
-
-def _download_url(rel_under_storage):
-    return "/files/download?path=" + quote(rel_under_storage)
 
 
 def _safe_name(name):
@@ -44,9 +26,7 @@ def _safe_name(name):
     return re.sub(r"[^\w.\- ]", "_", name) or "Untitled"
 
 
-# ---- Logo ----
-
-import mimetypes
+# ---- Logo (small, bundled with the deployment itself - stays on disk) ----
 
 _LOGO_NAMES = ["logo.png", "logo.jpg", "logo.jpeg", "logo.svg", "logo.webp"]
 
@@ -103,113 +83,115 @@ def decode_upload_files(files):
 
 
 # ---- Attachments (called from logic.py) ----
+# There's no real filesystem folder anymore - entity_type/entity_id is only used by
+# logic.py to re-key rows on lead->deal conversion, so the "folder" is just that pair.
 
 def get_or_create_entity_folder(entity_type, entity_id):
-    _ensure_dirs()
-    folder = os.path.join(ATTACHMENTS_DIR, "%s-%s" % (entity_type, entity_id))
-    os.makedirs(folder, exist_ok=True)
-    return folder
+    return (entity_type, entity_id)
 
 
 def create_file_in_folder(folder_abspath, name, mime, data_bytes):
-    os.makedirs(folder_abspath, exist_ok=True)
-    fname = uuid.uuid4().hex[:8] + "__" + _safe_name(name)
-    abspath = os.path.join(folder_abspath, fname)
-    with open(abspath, "wb") as f:
-        f.write(data_bytes)
-    rel = _rel_to_storage(abspath)
-    return {"id": rel, "url": _download_url(rel)}
+    with SessionLocal() as s:
+        b = Blob(name=_safe_name(name), mime_type=mime or "application/octet-stream",
+                  size=len(data_bytes), data=data_bytes)
+        s.add(b)
+        s.commit()
+        return {"id": str(b.id), "url": "/files/blob/%d" % b.id}
 
 
 def trash_file(rel_path):
-    """rel_path is relative to STORAGE_DIR (what create_file_in_folder returned as id)."""
+    """rel_path is the Blob id (as a string) - what create_file_in_folder returned as id."""
     try:
-        target = _resolve_under(STORAGE_DIR, rel_path)
-        if target and os.path.isfile(target):
-            os.remove(target)
-    except Exception:
-        pass
+        blob_id = int(rel_path)
+    except (TypeError, ValueError):
+        return
+    with SessionLocal() as s:
+        b = s.get(Blob, blob_id)
+        if b:
+            s.delete(b)
+            s.commit()
 
 
 def rename_entity_folder(from_type, from_id, to_type, to_id):
-    """No-op for local storage. The Attachments rows are re-keyed to the new entity, and
-    the files keep their stored paths (still valid) - renaming the folder would break
-    those paths, so we leave files in place. The folder name is only cosmetic anyway."""
+    """No-op: attachments are addressed by blob id, not by any folder path."""
     return
 
 
-# ---- path safety ----
+# ---- Documents file manager (a DocNode tree in the database) ----
 
-def _resolve_under(base, rel):
-    """Safely resolve rel under base; return abspath or None if it escapes base."""
-    rel = (rel or "").replace("\\", "/").lstrip("/")
-    target = os.path.realpath(os.path.join(base, rel))
-    base_real = os.path.realpath(base)
-    if target == base_real or target.startswith(base_real + os.sep):
-        return target
-    return None
+def _node_chain(s, node):
+    """Root-to-node list of DocNode rows, for breadcrumbs."""
+    chain = []
+    cur = node
+    while cur is not None:
+        chain.append(cur)
+        cur = s.get(DocNode, cur.parent_id) if cur.parent_id else None
+    return list(reversed(chain))
 
 
-# ---- Documents file manager (pure local) ----
-
-def _doc_abs(rel):
-    _ensure_dirs()
-    target = _resolve_under(DOCUMENTS_DIR, rel or "")
-    if target is None:
-        target = DOCUMENTS_DIR
-    return target
+def _get_folder(s, folder_id):
+    """folder_id is '' / None for root, else a DocNode id that must be a folder."""
+    if not folder_id:
+        return None
+    try:
+        node = s.get(DocNode, int(folder_id))
+    except (TypeError, ValueError):
+        return None
+    return node if node and node.kind == "folder" else None
 
 
 def getDocuments(folderId=None):
-    _ensure_dirs()
-    rel = (folderId or "").replace("\\", "/").strip("/")
-    absdir = _doc_abs(rel)
-    if not os.path.isdir(absdir):
-        rel, absdir = "", DOCUMENTS_DIR
+    with SessionLocal() as s:
+        folder = _get_folder(s, folderId)
+        chain = [{"id": "", "name": "Home"}]
+        if folder:
+            for n in _node_chain(s, folder):
+                chain.append({"id": str(n.id), "name": n.name})
 
-    # Breadcrumbs from the relative path.
-    chain = [{"id": "", "name": "Home"}]
-    if rel:
-        cum = []
-        for seg in rel.split("/"):
-            cum.append(seg)
-            chain.append({"id": "/".join(cum), "name": seg})
+        parent_id = folder.id if folder else None
+        children = (s.query(DocNode)
+                    .filter(DocNode.parent_id == parent_id)
+                    .order_by(DocNode.name)
+                    .all())
+        folders, files = [], []
+        for n in children:
+            if n.kind == "folder":
+                folders.append({"id": str(n.id), "name": n.name})
+            else:
+                files.append({
+                    "id": str(n.id),
+                    "name": n.name,
+                    "size": n.size or 0,
+                    "mimeType": n.mime_type or "",
+                    "url": "/files/doc/%d" % n.id,
+                    "modified": n.created_at.strftime("%Y-%m-%d %H:%M") if n.created_at else "",
+                })
 
-    folders, files = [], []
-    for entry in sorted(os.listdir(absdir), key=lambda x: x.lower()):
-        p = os.path.join(absdir, entry)
-        item_rel = (rel + "/" + entry) if rel else entry
-        if os.path.isdir(p):
-            folders.append({"id": item_rel, "name": entry})
-        else:
-            files.append({
-                "id": item_rel,
-                "name": entry,
-                "size": os.path.getsize(p),
-                "mimeType": mimetypes.guess_type(entry)[0] or "",
-                "url": _download_url("documents/" + item_rel),
-                "modified": datetime.fromtimestamp(os.path.getmtime(p)).strftime("%Y-%m-%d %H:%M"),
-            })
-
-    return {"folderId": rel, "isRoot": rel == "", "breadcrumbs": chain,
-            "folders": folders, "files": files}
+        return {"folderId": (str(folder.id) if folder else ""), "isRoot": folder is None,
+                "breadcrumbs": chain, "folders": folders, "files": files}
 
 
 def createDocFolder(parentFolderId, name):
     clean = _safe_name(name)
     if not clean:
         raise Exception("Folder name is required.")
-    parent = _doc_abs(parentFolderId or "")
-    os.makedirs(os.path.join(parent, clean), exist_ok=True)
+    with SessionLocal() as s:
+        parent = _get_folder(s, parentFolderId)
+        s.add(DocNode(parent_id=(parent.id if parent else None), kind="folder", name=clean))
+        s.commit()
     return getDocuments(parentFolderId or "")
 
 
 def uploadDocuments(folderId, files):
-    parent = _doc_abs(folderId or "")
-    os.makedirs(parent, exist_ok=True)
-    for f in decode_upload_files(files):
-        with open(os.path.join(parent, _safe_name(f["fileName"])), "wb") as out:
-            out.write(f["bytes"])
+    with SessionLocal() as s:
+        parent = _get_folder(s, folderId)
+        parent_id = parent.id if parent else None
+        for f in decode_upload_files(files):
+            s.add(DocNode(parent_id=parent_id, kind="file",
+                          name=_safe_name(f["fileName"]),
+                          mime_type=f["mimeType"] or "application/octet-stream",
+                          size=len(f["bytes"]), data=f["bytes"]))
+        s.commit()
     return getDocuments(folderId or "")
 
 
@@ -217,20 +199,40 @@ def renameDocItem(itemId, isFolder, newName, parentFolderId=None):
     clean = _safe_name(newName)
     if not clean:
         raise Exception("A name is required.")
-    src = _doc_abs(itemId)
-    if src is None or not os.path.exists(src) or os.path.realpath(src) == os.path.realpath(DOCUMENTS_DIR):
-        raise Exception("Item not found.")
-    dst = os.path.join(os.path.dirname(src), clean)
-    os.rename(src, dst)
+    with SessionLocal() as s:
+        try:
+            node = s.get(DocNode, int(itemId))
+        except (TypeError, ValueError):
+            node = None
+        if not node:
+            raise Exception("Item not found.")
+        node.name = clean
+        s.commit()
     return getDocuments(parentFolderId or "")
 
 
 def deleteDocItem(itemId, isFolder, parentFolderId=None):
-    target = _doc_abs(itemId)
-    if target is None or os.path.realpath(target) == os.path.realpath(DOCUMENTS_DIR):
-        raise Exception("Item not found.")
-    if os.path.isdir(target):
-        shutil.rmtree(target, ignore_errors=True)
-    elif os.path.isfile(target):
-        os.remove(target)
+    with SessionLocal() as s:
+        try:
+            node = s.get(DocNode, int(itemId))
+        except (TypeError, ValueError):
+            node = None
+        if not node:
+            raise Exception("Item not found.")
+        if node.kind == "folder":
+            _delete_subtree(s, node.id)
+        s.delete(node)
+        s.commit()
     return getDocuments(parentFolderId or "")
+
+
+def _delete_subtree(s, folder_id):
+    """Delete descendants bottom-up. There's no ORM relationship() on the self-referential
+    parent_id FK, so the unit-of-work doesn't know children must go before their parent -
+    flushing after each delete forces that order against the real FK constraint (TiDB/MySQL
+    enforces it; SQLite doesn't, but this keeps both paths identical)."""
+    for c in s.query(DocNode).filter(DocNode.parent_id == folder_id).all():
+        if c.kind == "folder":
+            _delete_subtree(s, c.id)
+        s.delete(c)
+        s.flush()

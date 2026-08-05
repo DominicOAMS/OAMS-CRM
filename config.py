@@ -36,9 +36,6 @@ DATABASE_URL = os.environ.get(
     "CRM_DATABASE_URL", "sqlite:///" + os.path.join(BASE_DIR, "crm.db")
 )
 
-# Where uploaded files (Lead attachments + Documents) are stored on disk.
-STORAGE_DIR = os.environ.get("CRM_STORAGE_DIR", os.path.join(BASE_DIR, "storage"))
-
 # Brand logo. Drop an image here (e.g. logo.png). If missing, the UI shows an "O" badge.
 LOGO_PATH = os.environ.get("CRM_LOGO_PATH", os.path.join(BASE_DIR, "static", "logo.png"))
 

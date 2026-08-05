@@ -11,7 +11,9 @@ Model:
 No Google, no accounts. Default DB is a local file (config.DATABASE_URL).
 """
 
-from sqlalchemy import create_engine, Column, String, Integer, JSON, text
+import datetime
+
+from sqlalchemy import create_engine, Column, String, Integer, JSON, LargeBinary, DateTime, ForeignKey, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from config import DATABASE_URL
@@ -48,6 +50,36 @@ class RowRec(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     sheet_name = Column(String(255), index=True)
     data = Column(JSON, default=dict)  # {columnName: value}
+
+
+# File storage lives in the database too (not local disk), so uploads survive Vercel's
+# ephemeral filesystem between serverless invocations. `length` on LargeBinary makes the
+# MySQL/TiDB dialect render LONGBLOB (up to 4GB) instead of the 64KB default BLOB.
+_BLOB = LargeBinary(length=(2 ** 32) - 1)
+
+
+class Blob(Base):
+    """A single uploaded file (Lead/Account/etc. attachment)."""
+    __tablename__ = "blobs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(500))
+    mime_type = Column(String(255))
+    size = Column(Integer)
+    data = Column(_BLOB)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class DocNode(Base):
+    """A folder or file in the Documents manager's tree."""
+    __tablename__ = "doc_nodes"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    parent_id = Column(Integer, ForeignKey("doc_nodes.id"), nullable=True, index=True)
+    kind = Column(String(10))  # "folder" | "file"
+    name = Column(String(500))
+    mime_type = Column(String(255))
+    size = Column(Integer)
+    data = Column(_BLOB, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 Base.metadata.create_all(engine)

@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <base target="_top">
   <!-- Local modal shim (drop-in for the SweetAlert2 API this app uses) -->
   <script src="/static/swal.js"></script>
@@ -16,7 +18,8 @@
 </head>
 <body>
 
-  <div class="sidebar">
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+  <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <div class="brand">
         <img class="brand-logo" src="/logo" alt="OAMS CRM logo"
@@ -60,6 +63,9 @@
 
   <div class="main-content">
     <div class="top-bar">
+      <button class="hamburger-btn" id="sidebarToggle" aria-label="Toggle menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
       <h1 id="page-title">Leads</h1>
       <div class="top-bar-buttons">
         <button class="btn btn-secondary" id="newDealBtn" style="display:none;">+ New Deal</button>
@@ -104,14 +110,16 @@
         <button class="btn btn-secondary" id="clearFiltersBtn" style="display:none;">Clear</button>
       </div>
 
-      <table class="data-table">
-        <thead>
-          <!-- Dynamically populated -->
-        </thead>
-        <tbody>
-          <!-- Dynamically populated -->
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <!-- Dynamically populated -->
+          </thead>
+          <tbody>
+            <!-- Dynamically populated -->
+          </tbody>
+        </table>
+      </div>
 
       <div class="kanban-toolbar" id="kanbanToolbar" style="display:none;">
         <select id="kanbanRep" class="filter-select"><option value="">All reps</option></select>

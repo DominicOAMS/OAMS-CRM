@@ -65,6 +65,47 @@
     if (backdrop) backdrop.addEventListener('click', closeSidebar);
   });
 
+  // Click-and-drag panning for the (already touch-scrollable) data table, for mouse
+  // users who wouldn't otherwise know to shift+scroll or hunt for the scrollbar.
+  document.addEventListener('DOMContentLoaded', () => {
+    const scroller = document.querySelector('.table-scroll');
+    if (!scroller) return;
+    let isDown = false, dragged = false, startX = 0, startScroll = 0;
+
+    scroller.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return; // left button only
+      isDown = true;
+      dragged = false;
+      startX = e.pageX;
+      startScroll = scroller.scrollLeft;
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isDown) return;
+      const dx = e.pageX - startX;
+      if (!dragged && Math.abs(dx) < 4) return; // small threshold so plain clicks pass through
+      dragged = true;
+      scroller.classList.add('dragging');
+      scroller.scrollLeft = startScroll - dx;
+    });
+
+    window.addEventListener('mouseup', () => {
+      isDown = false;
+      scroller.classList.remove('dragging');
+    });
+
+    // A capturing listener on the scroller (an ancestor of every cell) runs before any
+    // cell's own onclick - stopping it here is what keeps a drag from also opening the
+    // cell editor underneath the cursor on mouseup.
+    scroller.addEventListener('click', (e) => {
+      if (dragged) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      dragged = false;
+    }, true);
+  });
+
   // Minimal HTML-escaping for the new innerHTML-building code in this file (Kanban
   // cards, dynamic forms, attachments, analytics). The pre-existing table rendering
   // below does not escape cell values either - this doesn't retrofit that, it just

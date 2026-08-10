@@ -299,10 +299,22 @@
     height: 38px;
   }
 
-  /* Scrolls the table horizontally on its own, independent of the toolbar above it. */
+  /* Scrolls the table horizontally on its own, independent of the toolbar above it.
+     cursor:grab hints that it's click-and-drag pannable for mouse users (script.js). */
   .table-scroll {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+    cursor: grab;
+  }
+
+  .table-scroll.dragging {
+    cursor: grabbing;
+    user-select: none;
+  }
+
+  .table-scroll.dragging * {
+    cursor: grabbing;
+    user-select: none;
   }
 
   /* Table sizes to its content (min 100% of the area) and scrolls horizontally when

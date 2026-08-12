@@ -7,10 +7,11 @@ persist instead of disappearing between requests.
 
 ```
 app.py                 Flask app (run this) — also the login gate
-config.py              paths + database URL + login creds (all overridable via env vars)
-sheets.py              data store (SQLAlchemy) — the "spreadsheet" model + file blobs
+config.py              paths + database URL + session secret (overridable via env vars)
+sheets.py              data store (SQLAlchemy) — the "spreadsheet" model + file blobs + users
 drive.py               attachments + Documents (stored as DB blobs) + logo
 logic.py               all CRM logic
+users.py               user accounts (list/add/delete/reset password)
 import_from_sheets.py  optional one-time import of your old Google Sheet data
 templates/ static/     the web UI
 ```
@@ -99,28 +100,22 @@ per-request filesystem resets along with everything else.
 
 ## Logging in
 
-The whole app sits behind a single shared login (username/password, not per-user
-accounts). Defaults:
-- **Username:** `OAMS`
+Accounts are real rows in the database (`sheets.User`) rather than one shared password —
+each person gets their own username/password, and admins manage everyone else from the
+**User Settings** tab (only visible to admins).
+
+On first run, one admin account is seeded automatically:
+- **Username:** `Admin`
 - **Password:** set at setup time — ask whoever configured this deployment.
 
-The password is **never stored in plain text** — only a one-way hash of it lives in
-`config.py` (`_DEFAULT_LOGIN_HASH`), so reading the source code (or the GitHub repo)
-doesn't reveal it.
+**To change your own password, or add/remove other accounts**, log in as an admin and
+use the **User Settings** tab — no code or redeploy needed. Passwords are hashed
+(`werkzeug.security`) before they're stored; nothing is ever kept in plain text, in the
+database or in source.
 
-**To change the password**, generate a new hash and set it as an environment variable
-(don't edit the hash in `config.py` — env vars always win, and this keeps the change out
-of git):
-```bash
-python -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('your-new-password'))"
-```
-Set the result as `CRM_LOGIN_PASSWORD_HASH` (locally: add it to `.env`; on Vercel: add it
-as an Environment Variable, then redeploy). Change the username the same way with
-`CRM_LOGIN_USERNAME`.
-
-**`CRM_SECRET_KEY`** signs the login session cookie — unlike the password hash, this one
-actually is a secret (anyone who has it can forge a logged-in session), so it's read only
-from the environment and never has a real default baked into the code. Locally, one is
+**`CRM_SECRET_KEY`** signs the login session cookie - this one really is a secret
+(anyone who has it can forge a logged-in session for *any* user), so it's read only from
+the environment and never has a real default baked into the code. Locally, one is
 already in your `.env` (generated automatically). **On Vercel, set `CRM_SECRET_KEY`** to
 a random value too, e.g.:
 ```bash
@@ -129,15 +124,26 @@ python -c "import secrets; print(secrets.token_hex(32))"
 Without it, Vercel falls back to a random key generated per cold start, which logs
 everyone out unpredictably.
 
+If you ever lock yourself out of every admin account, reset one directly:
+```bash
+python -c "
+from werkzeug.security import generate_password_hash
+from sheets import SessionLocal, User
+with SessionLocal() as s:
+    u = s.query(User).filter(User.username == 'Admin').first()
+    u.password_hash = generate_password_hash('a-new-password')
+    s.commit()
+"
+```
+
 ---
 
 ## Notes
 
 - **Your data is local (until you deploy).** `crm.db` holds everything, including
-  uploaded files; back it up by copying that one file. It's gitignored so it won't be
-  committed.
-- **No Google dependency.** Attachments, Documents, and the login credentials all live
-  in the database; the logo is the one thing still served from a local file.
+  uploaded files and user accounts; back it up by copying that one file. It's gitignored
+  so it won't be committed.
+- **No Google dependency.** Attachments, Documents, and user accounts all live in the
+  database; the logo is the one thing still served from a local file.
 - **Env overrides:** `CRM_DATABASE_URL`, `CRM_LOGO_PATH`, `CRM_SPREADSHEET_ID` (importer
-  only), `CRM_LOGIN_USERNAME`, `CRM_LOGIN_PASSWORD_HASH`, `CRM_SECRET_KEY` (see
-  [Logging in](#logging-in)).
+  only), `CRM_SECRET_KEY` (see [Logging in](#logging-in)).

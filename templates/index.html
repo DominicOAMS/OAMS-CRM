@@ -58,8 +58,15 @@
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5a1.5 1.5 0 0 1 1.5-1.5h3.2a1.5 1.5 0 0 1 1.1.5l1.2 1.3H18.5A1.5 1.5 0 0 1 20 8.3V17.5A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5Z"/></svg></span>
         <span class="nav-label">Documents</span>
       </li>
+      {% if is_admin %}
+      <li id="nav-Users" onclick="switchTab('Users')">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c0-3.4 2.6-5.6 5.5-5.6s5.5 2.2 5.5 5.6"/><path d="M15.5 8.5a3 3 0 1 1 0 6M17.5 13.9c1.8.4 3 1.7 3 3.6v1.5"/></svg></span>
+        <span class="nav-label">User Settings</span>
+      </li>
+      {% endif %}
     </ul>
     <div class="sidebar-footer">
+      {% if username %}<div class="sidebar-username">Signed in as <strong>{{ username }}</strong></div>{% endif %}
       <a href="/logout" class="sidebar-logout">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h3"/><path d="M16 16l4-4-4-4"/><path d="M20 12H9"/></svg></span>
         <span class="nav-label">Logout</span>
@@ -80,6 +87,7 @@
         <button class="btn" id="importBtn">Import Data</button>
         <button class="btn" id="uploadDocBtn" style="display:none;">Upload Files</button>
         <input type="file" id="docFileInput" multiple style="display:none;">
+        <button class="btn" id="addUserBtn" style="display:none;">+ Add User</button>
       </div>
     </div>
     <div class="content-area">
@@ -184,6 +192,19 @@
         <div class="doc-breadcrumbs" id="docBreadcrumbs"></div>
         <div class="doc-grid" id="docGrid"></div>
       </div>
+
+      {% if is_admin %}
+      <div class="users-view" id="usersView" style="display:none;">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr><th>Username</th><th>Email</th><th>Role</th><th></th></tr>
+            </thead>
+            <tbody id="usersTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
 
       <div class="analytics-view" id="analyticsView" style="display:none;">
         <div class="analytics-controls">

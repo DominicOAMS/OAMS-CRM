@@ -13,7 +13,7 @@ No Google, no accounts. Default DB is a local file (config.DATABASE_URL).
 
 import datetime
 
-from sqlalchemy import create_engine, Column, String, Integer, JSON, LargeBinary, DateTime, ForeignKey, text
+from sqlalchemy import create_engine, Column, String, Integer, JSON, LargeBinary, DateTime, ForeignKey, Boolean, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from config import DATABASE_URL
@@ -82,7 +82,30 @@ class DocNode(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+class User(Base):
+    """A login account. Multiple accounts, one of which (at least) is an admin who can
+    manage the others from the User Settings tab."""
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(255), unique=True, nullable=False)
+    email = Column(String(255), nullable=True)
+    password_hash = Column(String(255), nullable=False)
+    is_admin = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
 Base.metadata.create_all(engine)
+
+# Hash of the initial admin password ("oams1010") - never stored in plain text, only
+# this one-way hash. Seeded once, only if the users table is empty; change the password
+# from the User Settings tab after logging in rather than editing this.
+_DEFAULT_ADMIN_USERNAME = "Admin"
+_DEFAULT_ADMIN_HASH = "scrypt:32768:8:1$beluSZ4FVdYrclqr$ed68745125eff9d30b5213bae242f363e72f1d58c71fc7a884f4cc252c01669a8a5e153853b5e4af4d5635851928d0d30d89f5f09479543f8ed6be982792ca60"
+
+with SessionLocal() as _s:
+    if _s.query(User).count() == 0:
+        _s.add(User(username=_DEFAULT_ADMIN_USERNAME, password_hash=_DEFAULT_ADMIN_HASH, is_admin=True))
+        _s.commit()
 
 
 def health():

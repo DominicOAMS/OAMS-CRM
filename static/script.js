@@ -148,6 +148,8 @@
       loadAnalytics();
     } else if (viewName === 'Documents') {
       loadDocuments(null);
+    } else if (viewName === 'Users') {
+      loadUsers();
     } else {
       loadData(viewName);
     }
@@ -161,11 +163,17 @@
     document.getElementById('dealsKanbanView').style.display = viewName === 'Deals' ? 'flex' : 'none';
     document.getElementById('analyticsView').style.display = viewName === 'Analytics' ? 'block' : 'none';
     document.getElementById('documentsView').style.display = viewName === 'Documents' ? 'block' : 'none';
+    // usersView only exists in the DOM for admins (the tab's Jinja block is skipped
+    // entirely for everyone else), so guard before touching it.
+    const usersView = document.getElementById('usersView');
+    if (usersView) usersView.style.display = viewName === 'Users' ? 'block' : 'none';
 
     // Contextual top-bar buttons: only the ones relevant to the active view show.
     document.getElementById('newDealBtn').style.display = viewName === 'Deals' ? 'inline-block' : 'none';
     document.getElementById('newFolderBtn').style.display = viewName === 'Documents' ? 'inline-block' : 'none';
     document.getElementById('uploadDocBtn').style.display = viewName === 'Documents' ? 'inline-block' : 'none';
+    const addUserBtn = document.getElementById('addUserBtn');
+    if (addUserBtn) addUserBtn.style.display = viewName === 'Users' ? 'inline-block' : 'none';
     // Manage Columns / Import Data only make sense for the spreadsheet-backed tables.
     document.getElementById('manageColumnsBtn').style.display = isTableView ? 'inline-block' : 'none';
     document.getElementById('importBtn').style.display = isTableView ? 'inline-block' : 'none';
@@ -2319,3 +2327,132 @@
 
   // Duplicate detect & merge UI removed (backend findDuplicateGroups/mergeRecords in
   // logic.py are untouched if this needs to come back later).
+
+  // --- USER SETTINGS (admin only - the tab/button only exist in the DOM for admins;
+  // the backend also rejects these RPCs from a non-admin session either way) ---
+
+  function loadUsers() {
+    Swal.fire({
+      title: 'Loading users...',
+      allowOutsideClick: false,
+      heightAuto: false,
+      scrollbarPadding: false,
+      didOpen: () => { Swal.showLoading(); }
+    });
+    google.script.run
+      .withSuccessHandler(list => { Swal.close(); renderUsersTable(list); })
+      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .listUsers();
+  }
+
+  function renderUsersTable(list) {
+    const tbody = document.getElementById('usersTableBody');
+    if (!tbody) return;
+    tbody.innerHTML = (list || []).map(u => `
+      <tr>
+        <td><div class="cell-view">${escapeHtml(u.username)}</div></td>
+        <td><div class="cell-view${u.email ? '' : ' empty'}">${u.email ? escapeHtml(u.email) : '—'}</div></td>
+        <td><span class="home-tag">${u.isAdmin ? 'Admin' : 'User'}</span></td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-secondary" style="padding:5px 10px; font-size:12px;" onclick="promptResetUserPassword(${u.id}, '${escapeHtml(u.username)}')">Reset Password</button>
+          <button class="btn btn-secondary btn-danger-outline" style="padding:5px 10px; font-size:12px;" onclick="promptDeleteUser(${u.id}, '${escapeHtml(u.username)}')">Delete</button>
+        </td>
+      </tr>`).join('') || `<tr><td colspan="4" style="text-align:center; color:#a0aabf; padding:28px; font-size:13px;">No users yet</td></tr>`;
+  }
+
+  document.getElementById('addUserBtn') && document.getElementById('addUserBtn').addEventListener('click', () => {
+    Swal.fire({
+      title: 'Add User',
+      html: `
+        <div class="form-field">
+          <label class="form-label">Username</label>
+          <input id="new-user-username" class="swal2-input swal-field-input" placeholder="e.g. jsmith" autocomplete="off">
+        </div>
+        <div class="form-field">
+          <label class="form-label">Email (optional)</label>
+          <input id="new-user-email" type="email" class="swal2-input swal-field-input" placeholder="jsmith@example.com" autocomplete="off">
+        </div>
+        <div class="form-field">
+          <label class="form-label">Password</label>
+          <input id="new-user-password" type="password" class="swal2-input swal-field-input" placeholder="At least 6 characters" autocomplete="new-password">
+        </div>
+        <div class="form-field" style="display:flex; align-items:center; gap:8px;">
+          <input id="new-user-admin" type="checkbox" style="width:16px; height:16px; margin:0;">
+          <label class="form-label" style="margin:0;" for="new-user-admin">Grant admin access</label>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Add User',
+      confirmButtonColor: '#0088ff',
+      heightAuto: false,
+      scrollbarPadding: false,
+      preConfirm: () => {
+        const username = document.getElementById('new-user-username').value.trim();
+        const password = document.getElementById('new-user-password').value;
+        if (!username) { Swal.showValidationMessage('A username is required'); return false; }
+        if (!password || password.length < 6) { Swal.showValidationMessage('Password must be at least 6 characters'); return false; }
+        return {
+          username: username,
+          email: document.getElementById('new-user-email').value.trim(),
+          password: password,
+          isAdmin: document.getElementById('new-user-admin').checked
+        };
+      }
+    }).then(result => {
+      if (result.isConfirmed) {
+        const v = result.value;
+        Swal.fire({ title: 'Adding user...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+        google.script.run
+          .withSuccessHandler(list => { Swal.close(); renderUsersTable(list); })
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .addUser(v.username, v.email, v.password, v.isAdmin);
+      }
+    });
+  });
+
+  window.promptResetUserPassword = function(userId, username) {
+    Swal.fire({
+      title: `Reset password for ${username}`,
+      input: 'password',
+      inputPlaceholder: 'New password (at least 6 characters)',
+      showCancelButton: true,
+      confirmButtonText: 'Reset',
+      confirmButtonColor: '#0088ff',
+      heightAuto: false,
+      scrollbarPadding: false,
+      inputValidator: (v) => (!v || v.length < 6) ? 'Password must be at least 6 characters' : undefined
+    }).then(result => {
+      if (result.isConfirmed) {
+        Swal.fire({ title: 'Updating...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+        google.script.run
+          .withSuccessHandler(list => {
+            Swal.close();
+            renderUsersTable(list);
+            Swal.fire({ title: 'Password updated', icon: 'success', timer: 1400, showConfirmButton: false, heightAuto: false, scrollbarPadding: false });
+          })
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .updateUserPassword(userId, result.value);
+      }
+    });
+  };
+
+  window.promptDeleteUser = function(userId, username) {
+    Swal.fire({
+      title: `Delete ${username}?`,
+      text: "They won't be able to log in anymore. This can't be undone.",
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#d93025',
+      confirmButtonText: 'Delete',
+      heightAuto: false,
+      scrollbarPadding: false
+    }).then(result => {
+      if (result.isConfirmed) {
+        Swal.fire({ title: 'Deleting...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+        google.script.run
+          .withSuccessHandler(list => { Swal.close(); renderUsersTable(list); })
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .deleteUser(userId);
+      }
+    });
+  };

@@ -10,13 +10,19 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="login-body">
+  <div class="login-glow login-glow-a"></div>
+  <div class="login-glow login-glow-b"></div>
+
   <div class="login-card">
     <div class="login-brand">
-      <img class="brand-logo" src="/logo" alt="OAMS CRM logo"
-           onload="var f=document.getElementById('loginBrandFallback'); if (f) f.style.display='none';"
-           onerror="this.style.display='none';">
-      <div class="brand-logo brand-logo-fallback" id="loginBrandFallback" aria-hidden="true">O</div>
+      <div class="login-logo-badge">
+        <img class="login-logo-img" src="/logo" alt="OAMS CRM logo"
+             onload="var f=document.getElementById('loginBrandFallback'); if (f) f.style.display='none';"
+             onerror="this.style.display='none';">
+        <span class="login-logo-fallback" id="loginBrandFallback" aria-hidden="true">O</span>
+      </div>
       <span class="login-brand-name">OAMS CRM</span>
+      <span class="login-brand-sub">Sign in to manage your leads and deals</span>
     </div>
 
     {% if error %}
@@ -26,11 +32,17 @@
     <form method="POST" action="/login" class="login-form">
       <div class="form-field">
         <label class="form-label" for="username">Username</label>
-        <input class="swal2-input" style="margin:0;" type="text" id="username" name="username" autocomplete="username" autofocus required>
+        <div class="login-input-group">
+          <svg class="login-input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.4"/><path d="M5 19.5c0-3.6 3-6 7-6s7 2.4 7 6"/></svg>
+          <input class="login-input" type="text" id="username" name="username" placeholder="Username" autocomplete="username" autofocus required>
+        </div>
       </div>
       <div class="form-field">
         <label class="form-label" for="password">Password</label>
-        <input class="swal2-input" style="margin:0;" type="password" id="password" name="password" autocomplete="current-password" required>
+        <div class="login-input-group">
+          <svg class="login-input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>
+          <input class="login-input" type="password" id="password" name="password" placeholder="Password" autocomplete="current-password" required>
+        </div>
       </div>
       <button class="btn login-submit" type="submit">Sign in</button>
     </form>

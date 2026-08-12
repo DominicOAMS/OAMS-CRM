@@ -2,7 +2,7 @@
 OAMS CRM — Python/Flask app backed by a local database (SQLAlchemy) and local files.
 
 `/`                    renders the single-page UI (login required).
-`/login`, `/logout`    the app's single shared login.
+`/login`, `/logout`    log in as one of the accounts in the users table.
 `/api/rpc`             mirrors the old google.script.run: {fn, args[]} -> function(*args).
 `/health`              confirms the database is reachable.
 `/logo`                serves the local brand logo (falls back to an "O" badge).
@@ -15,12 +15,12 @@ Run locally:  pip install -r requirements.txt  &&  python app.py   (no accounts 
 
 import traceback
 from flask import Flask, request, jsonify, render_template, Response, abort, session, redirect, url_for
-from werkzeug.security import check_password_hash
 
 import config
 import logic
 import drive
 import sheets
+import users
 from sheets import SessionLocal, Blob, DocNode
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -53,10 +53,14 @@ def login():
         return redirect(url_for("index"))
     error = None
     if request.method == "POST":
-        username = (request.form.get("username") or "").strip()
+        username = request.form.get("username") or ""
         password = request.form.get("password") or ""
-        if username == config.LOGIN_USERNAME and check_password_hash(config.LOGIN_PASSWORD_HASH, password):
+        user = users.verify_login(username, password)
+        if user:
             session["authenticated"] = True
+            session["user_id"] = user["id"]
+            session["username"] = user["username"]
+            session["is_admin"] = user["isAdmin"]
             session.permanent = True
             return redirect(url_for("index"))
         error = "Invalid username or password."
@@ -93,11 +97,17 @@ _register(logic, [
 _register(drive, [
     "getDocuments", "createDocFolder", "uploadDocuments", "renameDocItem", "deleteDocItem",
 ])
+_register(users, ["listUsers", "addUser", "deleteUser", "updateUserPassword"])
+
+# These manage OTHER people's accounts, so - unlike everything else behind the login
+# gate - they additionally require the current session to be an admin.
+_ADMIN_ONLY_RPC = {"listUsers", "addUser", "deleteUser", "updateUserPassword"}
 
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", is_admin=session.get("is_admin", False),
+                            username=session.get("username", ""))
 
 
 @app.route("/logo")
@@ -120,6 +130,8 @@ def rpc():
     fn = RPC.get(fn_name)
     if fn is None:
         return jsonify({"ok": False, "error": "Unknown action: %s" % fn_name}), 400
+    if fn_name in _ADMIN_ONLY_RPC and not session.get("is_admin"):
+        return jsonify({"ok": False, "error": "Admins only."}), 403
     try:
         result = fn(*args)
         return jsonify({"ok": True, "result": result})

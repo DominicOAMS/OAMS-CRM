@@ -1,14 +1,15 @@
 # OAMS CRM — Python / Flask (local, no accounts needed)
 
 A self-contained Python version of the OAMS CRM. It uses a **local database**
-(SQLAlchemy → SQLite by default) and stores files **on disk**, so it runs with **no
-Google account, service account, or API key**.
+(SQLAlchemy → SQLite by default) and stores files **in that same database**, so it runs
+with **no Google account, service account, or API key** — and, once deployed, uploads
+persist instead of disappearing between requests.
 
 ```
-app.py                 Flask app (run this)
-config.py              paths + database URL (all overridable via env vars)
-sheets.py              local data store (SQLAlchemy) — the "spreadsheet" model
-drive.py               local file storage (attachments + Documents) + logo
+app.py                 Flask app (run this) — also the login gate
+config.py              paths + database URL + login creds (all overridable via env vars)
+sheets.py              data store (SQLAlchemy) — the "spreadsheet" model + file blobs
+drive.py               attachments + Documents (stored as DB blobs) + logo
 logic.py               all CRM logic
 import_from_sheets.py  optional one-time import of your old Google Sheet data
 templates/ static/     the web UI
@@ -28,12 +29,14 @@ python app.py
 Open <http://localhost:5000>. Check <http://localhost:5000/health> — it should say
 `{"ok": true, "status": "database ready (sqlite)"}`.
 
-That's it. On first run it creates:
-- `crm.db` — your database (a single local file).
-- `storage/` — where attachments and Documents files are saved.
+That's it. On first run it creates `crm.db` — your database (a single local file,
+including any uploaded attachments/Documents, stored as blobs in it).
 
 The tabs (Leads, Contacts, Accounts, Deals, Visits, Documents) work immediately; they
 start empty and fill in as you add records or import.
+
+You'll land on a **login page** first — see [Logging in](#logging-in) below for the
+default credentials and how to change them.
 
 ## Add your logo (optional)
 
@@ -81,24 +84,60 @@ it's just a connection string.
    ```
    (PowerShell: `$env:CRM_DATABASE_URL="..."`.) This creates the tables in TiDB and
    fills them — same importer as before, just pointed at the cloud DB.
-4. **Deploy.** Push this folder to a Git repo, import it in Vercel, and add one
-   Environment Variable:
+4. **Deploy.** Push this folder to a Git repo, import it in Vercel, and add these
+   Environment Variables:
    - `CRM_DATABASE_URL` = the same `mysql+pymysql://…` string.
+   - `CRM_SECRET_KEY` = a random value (see [Logging in](#logging-in)) — required for
+     login sessions to stay stable across deployments.
    Vercel runs `app.py` via `vercel.json`. Done — your live site reads/writes TiDB.
 
-**Heads-up about files.** The database persists on TiDB, but **uploaded files**
-(Lead attachments + Documents) are still written to local disk, which Vercel wipes.
-So on Vercel those uploads won't stick. Everything else works. When you want persistent
-files too, tell me and I'll wire attachments/Documents to a blob store (Vercel Blob or
-S3) — it's a contained change to `drive.py`.
+**Files persist too.** Attachments and Documents uploads are stored as blobs in the same
+database (TiDB in production, SQLite locally) — not on disk — so they survive Vercel's
+per-request filesystem resets along with everything else.
+
+---
+
+## Logging in
+
+The whole app sits behind a single shared login (username/password, not per-user
+accounts). Defaults:
+- **Username:** `OAMS`
+- **Password:** set at setup time — ask whoever configured this deployment.
+
+The password is **never stored in plain text** — only a one-way hash of it lives in
+`config.py` (`_DEFAULT_LOGIN_HASH`), so reading the source code (or the GitHub repo)
+doesn't reveal it.
+
+**To change the password**, generate a new hash and set it as an environment variable
+(don't edit the hash in `config.py` — env vars always win, and this keeps the change out
+of git):
+```bash
+python -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('your-new-password'))"
+```
+Set the result as `CRM_LOGIN_PASSWORD_HASH` (locally: add it to `.env`; on Vercel: add it
+as an Environment Variable, then redeploy). Change the username the same way with
+`CRM_LOGIN_USERNAME`.
+
+**`CRM_SECRET_KEY`** signs the login session cookie — unlike the password hash, this one
+actually is a secret (anyone who has it can forge a logged-in session), so it's read only
+from the environment and never has a real default baked into the code. Locally, one is
+already in your `.env` (generated automatically). **On Vercel, set `CRM_SECRET_KEY`** to
+a random value too, e.g.:
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+Without it, Vercel falls back to a random key generated per cold start, which logs
+everyone out unpredictably.
 
 ---
 
 ## Notes
 
-- **Your data is local (until you deploy).** `crm.db` and `storage/` hold everything;
-  back them up by copying those. They're gitignored so they won't be committed.
-- **No Google dependency.** Attachments and Documents are saved under `storage/` and
-  served by the app; the logo is a local file.
-- **Env overrides:** `CRM_DATABASE_URL`, `CRM_STORAGE_DIR`, `CRM_LOGO_PATH`,
-  `CRM_SPREADSHEET_ID` (importer only).
+- **Your data is local (until you deploy).** `crm.db` holds everything, including
+  uploaded files; back it up by copying that one file. It's gitignored so it won't be
+  committed.
+- **No Google dependency.** Attachments, Documents, and the login credentials all live
+  in the database; the logo is the one thing still served from a local file.
+- **Env overrides:** `CRM_DATABASE_URL`, `CRM_LOGO_PATH`, `CRM_SPREADSHEET_ID` (importer
+  only), `CRM_LOGIN_USERNAME`, `CRM_LOGIN_PASSWORD_HASH`, `CRM_SECRET_KEY` (see
+  [Logging in](#logging-in)).

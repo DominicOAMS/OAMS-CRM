@@ -353,12 +353,20 @@
   }
 
   /* Zoho-style footer: always-visible scrollbar (native ones auto-hide on touch/Mac)
-     plus a running record count, docked right under the table. */
+     plus a running record count. Sticky to the bottom of .content-area's own scroll
+     viewport (not the table's) so it's visible without scrolling past every row, and
+     stays put while you scroll through them - only the table body scrolls under it. */
   .table-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 4px 0;
+    padding: 8px 4px;
+    margin-top: 8px;
+    background: var(--color-bg);
+    border-top: 1px solid var(--color-border);
   }
 
   .table-scroll-btn {

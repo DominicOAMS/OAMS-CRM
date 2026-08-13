@@ -351,30 +351,34 @@
       bodyHtml += `<tr><td class="sticky-col"></td><td colspan="${visibleColCount}" style="text-align:center; color:#a0aabf; padding:28px; font-size:13px;">${msg}</td></tr>`;
     }
 
-    // Render New Record Row
+    tbody.innerHTML = bodyHtml;
+
+    // "Add new record" row lives in <tfoot>, not <tbody> - pinned there (via CSS) so
+    // it's always reachable without scrolling down through however many rows exist.
+    const tfoot = document.querySelector('.data-table tfoot');
+    let footHtml = '';
     if (data.columns.length > 0) {
-      bodyHtml += '<tr style="background-color: #f9fbfd;">';
-      bodyHtml += '<td class="sticky-col"></td>';
+      footHtml += '<tr>';
+      footHtml += '<td class="sticky-col"></td>';
       data.columns.forEach(col => {
         if (HIDE_IDS && isIdColumn(col.name)) return;
         const idClass = isIdColumn(col.name) ? ' inline-input-id' : '';
-        bodyHtml += `<td>`;
+        footHtml += `<td>`;
         if (col.type === 'dropdown') {
-          bodyHtml += `<select class="inline-input${idClass} new-lead-input" data-col="${col.name}" onkeydown="handleInlineEnter(event)">`;
-          bodyHtml += `<option value="" disabled selected>Select ${col.name}...</option>`;
+          footHtml += `<select class="inline-input${idClass} new-lead-input" data-col="${col.name}" onkeydown="handleInlineEnter(event)">`;
+          footHtml += `<option value="" disabled selected>Select ${col.name}...</option>`;
           col.options.forEach(opt => {
-            bodyHtml += `<option value="${opt}">${opt}</option>`;
+            footHtml += `<option value="${opt}">${opt}</option>`;
           });
-          bodyHtml += `</select>`;
+          footHtml += `</select>`;
         } else {
-          bodyHtml += `<input type="text" class="inline-input${idClass} new-lead-input" data-col="${col.name}" placeholder="Add ${col.name}..." onkeydown="handleInlineEnter(event)">`;
+          footHtml += `<input type="text" class="inline-input${idClass} new-lead-input" data-col="${col.name}" placeholder="Add ${col.name}..." onkeydown="handleInlineEnter(event)">`;
         }
-        bodyHtml += `</td>`;
+        footHtml += `</td>`;
       });
-      bodyHtml += '</tr>';
+      footHtml += '</tr>';
     }
-
-    tbody.innerHTML = bodyHtml;
+    tfoot.innerHTML = footHtml;
 
     document.getElementById('tableFooterCount').innerText = `Total Records: ${matchCount}`;
     syncTableScrollbar();

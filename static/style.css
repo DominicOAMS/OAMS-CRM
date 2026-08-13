@@ -336,10 +336,27 @@
 
   /* Scrolls the table horizontally on its own, independent of the toolbar above it.
      cursor:grab hints that it's click-and-drag pannable for mouse users (script.js). */
+  /* Bounded height + its own vertical scroll (rather than relying on .content-area's)
+     is what lets the tfoot "Add new record" row below stick to the bottom of THIS box
+     instead of the whole page - only the data rows scroll, the add-row stays put. */
   .table-scroll {
+    max-height: 65vh;
     overflow-x: auto;
+    overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     cursor: grab;
+    /* auto (not hidden) still clips to this radius, and unlike `overflow:hidden` on the
+       table itself, doesn't break position:sticky for the tfoot row inside it. */
+    border-radius: var(--radius-md);
+  }
+
+  /* The custom scrollbar in .table-footer replaces this one - hiding it (Chrome/Edge/
+     Safari only; Firefox has no per-axis scrollbar control) avoids showing two
+     horizontal scrollbars stacked on top of each other. `height` is what sizes a
+     WebKit horizontal scrollbar (its "thickness"); leaving `width` alone keeps the
+     vertical one, which has no custom equivalent, visible at its normal size. */
+  .table-scroll::-webkit-scrollbar {
+    height: 0;
   }
 
   .table-scroll.dragging {
@@ -431,8 +448,11 @@
     background-color: #ffffff;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
-    overflow: hidden;
     box-shadow: var(--shadow-sm);
+    /* No `overflow: hidden` here (moved the rounded-corner clipping to .table-scroll,
+       which already clips via overflow-x/y:auto) - an overflow!=visible ancestor
+       between a sticky cell and its real scroll container breaks position:sticky, and
+       this table sits between .table-scroll and the sticky tfoot "Add new record" row. */
   }
 
   .data-table th, .data-table td {
@@ -518,6 +538,23 @@
   .data-table th.sticky-col {
     background-color: #f8f9fa;
     z-index: 3;
+  }
+
+  /* "Add new record" row (in <tfoot>) - pinned to the bottom of .table-scroll's own
+     scroll box (which now has its own max-height/overflow-y, see .table-scroll) so it
+     stays visible while the data rows above it scroll past. Needs its own opaque
+     background since, unlike a normal in-flow row, scrolled-under rows would otherwise
+     show through a sticky element. */
+  .data-table tfoot td {
+    position: sticky;
+    bottom: 0;
+    background-color: #f9fbfd;
+    border-top: 2px solid var(--color-border);
+    z-index: 4;
+  }
+
+  .data-table tfoot td.sticky-col {
+    z-index: 5;
   }
 
   /* Action Menu Styles */

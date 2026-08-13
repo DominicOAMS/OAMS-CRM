@@ -352,6 +352,68 @@
     user-select: none;
   }
 
+  /* Zoho-style footer: always-visible scrollbar (native ones auto-hide on touch/Mac)
+     plus a running record count, docked right under the table. */
+  .table-footer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 4px 0;
+  }
+
+  .table-scroll-btn {
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--color-border);
+    background: #ffffff;
+    color: var(--color-text-muted);
+    border-radius: var(--radius-sm);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .table-scroll-btn:hover {
+    background: var(--color-bg);
+    color: var(--color-text);
+  }
+
+  .table-scrollbar-track {
+    position: relative;
+    flex: 1 1 auto;
+    height: 8px;
+    background: var(--color-border);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .table-scrollbar-thumb {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    min-width: 30px;
+    background: #b7c0cf;
+    border-radius: 4px;
+    cursor: grab;
+  }
+
+  .table-scrollbar-thumb:hover {
+    background: var(--color-text-faint);
+  }
+
+  .table-footer-count {
+    flex-shrink: 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+
   /* Table sizes to its content (min 100% of the area) and scrolls horizontally when
      there are many columns, instead of squashing every column into a sliver. */
   .data-table {

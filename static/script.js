@@ -106,6 +106,80 @@
     }, true);
   });
 
+  // Always-visible custom scrollbar for the table (native scrollbars auto-hide on
+  // touch/Mac, which made the horizontal overflow hard to discover) - a thin track +
+  // draggable thumb underneath the table, plus explicit left/right buttons.
+  function syncTableScrollbar() {
+    const scroller = document.querySelector('.table-scroll');
+    const track = document.getElementById('tableScrollbarTrack');
+    const thumb = document.getElementById('tableScrollbarThumb');
+    if (!scroller || !track || !thumb) return;
+
+    const trackWidth = track.clientWidth;
+    const contentWidth = scroller.scrollWidth;
+    const viewWidth = scroller.clientWidth;
+    if (contentWidth <= viewWidth || trackWidth === 0) {
+      // Nothing to scroll - fill the track so it visually reads as "all the way".
+      thumb.style.width = '100%';
+      thumb.style.left = '0';
+      return;
+    }
+    const thumbWidth = Math.max(30, (viewWidth / contentWidth) * trackWidth);
+    const maxThumbLeft = trackWidth - thumbWidth;
+    const maxScroll = contentWidth - viewWidth;
+    const thumbLeft = maxScroll > 0 ? (scroller.scrollLeft / maxScroll) * maxThumbLeft : 0;
+    thumb.style.width = thumbWidth + 'px';
+    thumb.style.left = thumbLeft + 'px';
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const scroller = document.querySelector('.table-scroll');
+    const track = document.getElementById('tableScrollbarTrack');
+    const thumb = document.getElementById('tableScrollbarThumb');
+    const leftBtn = document.getElementById('tableScrollLeftBtn');
+    const rightBtn = document.getElementById('tableScrollRightBtn');
+    if (!scroller || !track || !thumb || !leftBtn || !rightBtn) return;
+
+    scroller.addEventListener('scroll', syncTableScrollbar);
+    window.addEventListener('resize', syncTableScrollbar);
+
+    leftBtn.addEventListener('click', () => scroller.scrollBy({ left: -200, behavior: 'smooth' }));
+    rightBtn.addEventListener('click', () => scroller.scrollBy({ left: 200, behavior: 'smooth' }));
+
+    // Clicking the track (not the thumb itself) jumps the scroll position there.
+    track.addEventListener('click', (e) => {
+      if (e.target === thumb) return;
+      const rect = track.getBoundingClientRect();
+      const ratio = (e.clientX - rect.left) / rect.width;
+      const maxScroll = scroller.scrollWidth - scroller.clientWidth;
+      scroller.scrollLeft = ratio * maxScroll;
+    });
+
+    // Dragging the thumb scrolls the table proportionally - mirrors the table's own
+    // click-and-drag panning, just anchored to the visible scrollbar instead.
+    let dragging = false, startX = 0, startScrollLeft = 0;
+    thumb.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      dragging = true;
+      startX = e.pageX;
+      startScrollLeft = scroller.scrollLeft;
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const trackWidth = track.clientWidth;
+      const contentWidth = scroller.scrollWidth;
+      const viewWidth = scroller.clientWidth;
+      const thumbWidth = Math.max(30, (viewWidth / contentWidth) * trackWidth);
+      const maxThumbLeft = trackWidth - thumbWidth;
+      const maxScroll = contentWidth - viewWidth;
+      if (maxThumbLeft <= 0 || maxScroll <= 0) return;
+      const dx = e.pageX - startX;
+      const scrollDelta = (dx / maxThumbLeft) * maxScroll;
+      scroller.scrollLeft = startScrollLeft + scrollDelta;
+    });
+    window.addEventListener('mouseup', () => { dragging = false; });
+  });
+
   // Minimal HTML-escaping for the new innerHTML-building code in this file (Kanban
   // cards, dynamic forms, attachments, analytics). The pre-existing table rendering
   // below does not escape cell values either - this doesn't retrofit that, it just
@@ -178,6 +252,7 @@
     document.getElementById('manageColumnsBtn').style.display = isTableView ? 'inline-block' : 'none';
     document.getElementById('importBtn').style.display = isTableView ? 'inline-block' : 'none';
     document.getElementById('tableToolbar').style.display = isTableView ? 'flex' : 'none';
+    document.getElementById('tableFooter').style.display = isTableView ? 'flex' : 'none';
     document.getElementById('kanbanToolbar').style.display = viewName === 'Deals' ? 'flex' : 'none';
   }
 
@@ -231,6 +306,7 @@
     let bodyHtml = '';
     let matchCount = 0;
     data.rows.forEach((row, rowIndex) => {
+      if (isRowBlank(row, data.columns)) return;
       if (!rowMatchesFilters(row, data.columns)) return;
       matchCount++;
       bodyHtml += `<tr>`;
@@ -268,9 +344,11 @@
       bodyHtml += '</tr>';
     });
 
-    // Empty state when a search/filter hides everything (the add-row still shows below).
-    if (matchCount === 0 && (tableSearch || tableFilterVal)) {
-      bodyHtml += `<tr><td class="sticky-col"></td><td colspan="${visibleColCount}" style="text-align:center; color:#a0aabf; padding:28px; font-size:13px;">No matching records</td></tr>`;
+    // Empty state when a search/filter (or blank-row hiding) leaves nothing to show -
+    // the add-row still shows below regardless.
+    if (matchCount === 0) {
+      const msg = (tableSearch || tableFilterVal) ? 'No matching records' : 'No records to display';
+      bodyHtml += `<tr><td class="sticky-col"></td><td colspan="${visibleColCount}" style="text-align:center; color:#a0aabf; padding:28px; font-size:13px;">${msg}</td></tr>`;
     }
 
     // Render New Record Row
@@ -297,6 +375,20 @@
     }
 
     tbody.innerHTML = bodyHtml;
+
+    document.getElementById('tableFooterCount').innerText = `Total Records: ${matchCount}`;
+    syncTableScrollbar();
+  }
+
+  // A row with nothing in any visible column is treated as junk (leftover from a messy
+  // import) and hidden - this only affects what's rendered, the underlying record is
+  // untouched, so it still exists if you ever need it (e.g. via a raw DB query).
+  function isRowBlank(row, columns) {
+    return columns.every((col, i) => {
+      if (isIdColumn(col.name)) return true;
+      const v = row[i];
+      return v === null || v === undefined || String(v).trim() === '';
+    });
   }
 
   // --- TABLE SEARCH + FILTER ---

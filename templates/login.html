@@ -22,11 +22,14 @@
         <span class="login-logo-fallback" id="loginBrandFallback" aria-hidden="true">O</span>
       </div>
       <span class="login-brand-name">OAMS CRM</span>
-      <span class="login-brand-sub">Sign in to manage your leads and deals</span>
+      <span class="login-brand-sub">Sign in to manage your accounts and sales</span>
     </div>
 
     {% if error %}
-      <div class="login-error">{{ error }}</div>
+      <div class="login-error">
+        {{ error }}
+        <div class="login-error-hint">Contact your administrator if you can't sign in.</div>
+      </div>
     {% endif %}
 
     <form method="POST" action="/login" class="login-form">

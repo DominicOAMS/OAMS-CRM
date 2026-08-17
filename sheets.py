@@ -191,13 +191,20 @@ def ensure_worksheet(name, headers):
 
 
 def get_all_values(ws):
+    """The header row is stripped for display/matching consistency with header_row()
+    (a stray space in a stored column name - e.g. from a messy import - used to make
+    this disagree with header_row(), which silently broke saving edits to that column
+    and any code that looks up a value by an exact header string). Row data is still
+    looked up by the RAW column name, since that's the key it was actually stored
+    under (append_row/update_cell key by _col_names(), not the stripped display name)."""
     name = ws.name
-    names = _col_names(name)
+    raw_names = _col_names(name)
+    names = [str(n).strip() for n in raw_names]
     out = [names]
     with SessionLocal() as s:
         for r in _rows(s, name):
             data = r.data or {}
-            out.append([_cellstr(data.get(n, "")) for n in names])
+            out.append([_cellstr(data.get(n, "")) for n in raw_names])
     return out
 
 

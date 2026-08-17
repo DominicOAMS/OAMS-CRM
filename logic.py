@@ -79,6 +79,30 @@ def _norm(v):
     return ("" if v is None else str(v)).strip()
 
 
+def _set_contact_account_link(row_data, account_name):
+    """Contacts link to their Account by plain name (no ID), but the real column for
+    that is "Account Name" on Contacts imported from the old Sheet, vs "Account" on
+    the DEFAULT_HEADERS template for a brand-new Contacts sheet. Writing the wrong one
+    doesn't error - it just silently vanishes into a key addRecordData never reads,
+    leaving the new Contact created but not actually linked to any Account."""
+    contacts_ws = sheets.get_worksheet("Contacts")
+    headers = sheets.header_row(contacts_ws) if contacts_ws else []
+    key = "Account Name" if "Account Name" in headers else "Account"
+    row_data[key] = account_name
+
+
+def _set_contact_name(row_data, full_name, first_name, last_name):
+    """Same problem as the account link, for the name: real Contacts data uses split
+    First Name/Last Name columns, not a combined "Name" field."""
+    contacts_ws = sheets.get_worksheet("Contacts")
+    headers = sheets.header_row(contacts_ws) if contacts_ws else []
+    if "First Name" in headers or "Last Name" in headers:
+        row_data["First Name"] = first_name
+        row_data["Last Name"] = last_name
+    else:
+        row_data["Name"] = full_name
+
+
 def _read(ws):
     """Return (headers, data_rows) as lists of strings; headers row + rows below."""
     vals = sheets.get_all_values(ws)
@@ -104,6 +128,28 @@ def findRowByIdColumn_(ws, id_col_name, id_value):
         if ci < len(row) and str(row[ci]) == str(id_value):
             return i + 2
     return -1
+
+
+def _find_account_id_by_name_ci(name):
+    """Case-insensitive lookup of an existing Account by name. Accounts are matched by
+    plain name throughout the app (Contacts/Deals store the name, not an ID), so a
+    second same-named row would be an untraceable duplicate rather than a genuinely
+    distinct account - callers use this to avoid minting one."""
+    acc_ws = sheets.get_worksheet("Accounts")
+    if acc_ws is None:
+        return None
+    headers, rows = _read(acc_ws)
+    if "Account Name" not in headers or "Account ID" not in headers:
+        return None
+    name_i = headers.index("Account Name")
+    id_i = headers.index("Account ID")
+    target = _norm(name).lower()
+    if not target:
+        return None
+    for row in rows:
+        if name_i < len(row) and _norm(row[name_i]).lower() == target:
+            return row[id_i] if id_i < len(row) else None
+    return None
 
 
 def _append_missing_headers(ws, headers, missing):
@@ -138,7 +184,7 @@ def ensureAccountsVisitColumns_():
     if ws is None:
         ws = sheets.ensure_worksheet("Accounts", DEFAULT_HEADERS["Accounts"])
     headers = sheets.header_row(ws)
-    missing = [c for c in ["Last Visit", "Visit Count", "Sales Rep", "Territory"] if c not in headers]
+    missing = [c for c in ["Last Visit", "Visit Count", "Sales Rep", "Territory", "Created Time"] if c not in headers]
     if missing:
         _append_missing_headers(ws, headers, missing)
     return ws
@@ -174,23 +220,33 @@ def getSheetData(sheetName):
 
     validations = sheets.get_row2_validations(sheetName, last_col)
 
-    # Dynamic Account dropdown options (plain names).
+    # Dynamic Account dropdown options (plain names). Looked up by column NAME, not a
+    # hardcoded position - "Account Name" sits at a different index on data imported
+    # from the old Sheet than on the DEFAULT_HEADERS template for a fresh sheet, and
+    # reading the wrong position (previously always index 1) silently pulled from
+    # whatever column happened to be there instead - Sales Rep, on this real data.
     acc_options = None
     if sheetName in ("Contacts", "Deals"):
         acc_options = []
         acc_ws = sheets.get_worksheet("Accounts")
         if acc_ws is not None:
             acc_vals = sheets.get_all_values(acc_ws)
+            acc_headers = acc_vals[0] if acc_vals else []
+            name_i = acc_headers.index("Account Name") if "Account Name" in acc_headers else 1
             seen = set()
             for r in acc_vals[1:]:
-                nm = _norm(r[1]) if len(r) > 1 else ""
+                nm = _norm(r[name_i]) if name_i < len(r) else ""
                 if nm and nm.lower() not in seen:
                     seen.add(nm.lower())
                     acc_options.append(nm)
 
     columns = []
     for i, colName in enumerate(header_values):
-        if acc_options is not None and colName in ("Account", "Account ID"):
+        # "Account Name" is the real column on Contacts data imported from the old
+        # Sheet; "Account"/"Account ID" match the DEFAULT_HEADERS template for a
+        # brand-new sheet. Without all three, real imported Contacts never actually
+        # got the dropdown treatment - the field silently stayed free text.
+        if acc_options is not None and colName in ("Account", "Account ID", "Account Name"):
             columns.append({"name": colName, "type": "dropdown", "options": acc_options})
         elif validations[i]:
             columns.append({"name": colName, "type": "dropdown", "options": validations[i]["options"]})
@@ -231,9 +287,42 @@ def updateCellData(sheetName, rowIndex, colName, newValue):
     if ws is None:
         return None
     headers = sheets.header_row(ws)
-    if colName in headers:
-        sheets.update_cell(ws, rowIndex + 2, headers.index(colName) + 1, newValue)
+    if colName not in headers:
+        return None
+
+    old_value = None
+    if sheetName == "Accounts" and colName == "Account Name":
+        old_row = sheets.get_row_values(sheetName, rowIndex + 2)
+        col_i = headers.index(colName)
+        old_value = old_row[col_i] if col_i < len(old_row) else None
+
+    sheets.update_cell(ws, rowIndex + 2, headers.index(colName) + 1, newValue)
+
+    if old_value and _norm(old_value).lower() != _norm(newValue).lower():
+        _cascadeAccountRename_(old_value, newValue)
     return None
+
+
+def _cascadeAccountRename_(old_name, new_name):
+    """Contacts/Deals link to an Account by its plain name, not an ID - editing an
+    Account's name (even just fixing a typo) would otherwise silently orphan every
+    existing Contact/Deal that pointed at the old spelling."""
+    old_norm = _norm(old_name).lower()
+    for sheet_name, col_name in (
+        ("Contacts", "Account Name"), ("Contacts", "Account"),
+        ("Deals", "Account"), ("Deals", "Account Name"),
+    ):
+        ws = sheets.get_worksheet(sheet_name)
+        if ws is None:
+            continue
+        headers = sheets.header_row(ws)
+        if col_name not in headers:
+            continue
+        col_i = headers.index(col_name)
+        vals = sheets.get_all_values(ws)
+        for row_offset, row in enumerate(vals[1:]):
+            if col_i < len(row) and _norm(row[col_i]).lower() == old_norm:
+                sheets.update_cell(ws, row_offset + 2, col_i + 1, new_name)
 
 
 def deleteRecordRow(sheetName, rowIndex):
@@ -246,7 +335,7 @@ def deleteRecordRow(sheetName, rowIndex):
 def convertLeadToAccount(rowIndex):
     leads_ws = sheets.get_worksheet("Leads")
     if leads_ws is None:
-        raise Exception("Leads sheet not found.")
+        raise Exception("Leads data isn't available right now - contact your admin.")
     headers, rows = _read(leads_ws)
     if rowIndex < 0 or rowIndex >= len(rows):
         raise Exception("Lead row not found.")
@@ -256,7 +345,20 @@ def convertLeadToAccount(rowIndex):
         lead[h.lower()] = row[i] if i < len(row) else ""
 
     company = lead.get("company") or lead.get("account name") or lead.get("account") or "Unknown Company"
-    name = lead.get("name") or lead.get("contact person") or lead.get("contact") or "Unknown Name"
+    # This schema (First Name + Last Name, no combined "Name" field) is what this
+    # app's real Lead data actually uses - without composing from those, `name` would
+    # silently fall through to "Unknown Name" for every real lead in the system.
+    lead_first = lead.get("first name") or ""
+    lead_last = lead.get("last name") or ""
+    combined_name = lead.get("name") or lead.get("contact person") or lead.get("contact") or ""
+    if not combined_name:
+        combined_name = (str(lead_first) + " " + str(lead_last)).strip()
+    if not lead_first and not lead_last and combined_name:
+        # Source only had a combined name (not split) - best-effort split for targets
+        # that need First/Last separately.
+        parts = combined_name.split(" ", 1)
+        lead_first, lead_last = parts[0], (parts[1] if len(parts) > 1 else "")
+    name = combined_name or "Unknown Name"
     email = lead.get("email") or ""
     phone = lead.get("phone") or ""
     number = lead.get("number") or ""
@@ -270,17 +372,23 @@ def convertLeadToAccount(rowIndex):
     account_link = company  # plain name link
 
     ensureAccountsVisitColumns_()
-    addRecordData("Accounts", {
-        "Account ID": account_id, "Account Name": company,
-        "Sales Rep": sales_rep, "Territory": territory,
-        "Number": number, "Created Time": timestamp,
-    })
+    # Don't mint a second Account row for a company that already has one - since
+    # Accounts are matched by plain name everywhere else, a duplicate would just be an
+    # untraceable second record, not a distinct account.
+    if not _find_account_id_by_name_ci(company):
+        addRecordData("Accounts", {
+            "Account ID": account_id, "Account Name": company,
+            "Sales Rep": sales_rep, "Territory": territory,
+            "Number": number, "Created Time": timestamp,
+        })
 
     getSheetData("Contacts")
-    addRecordData("Contacts", {
-        "Contact ID": contact_id, "Account": account_link, "Name": name,
-        "Email": email, "Phone": phone, "Created Time": timestamp,
-    })
+    contact_row = {
+        "Contact ID": contact_id, "Email": email, "Phone": phone, "Created Time": timestamp,
+    }
+    _set_contact_account_link(contact_row, account_link)
+    _set_contact_name(contact_row, name, lead_first, lead_last)
+    addRecordData("Contacts", contact_row)
 
     ensureDealsSchema_()
     addRecordData("Deals", {
@@ -300,7 +408,7 @@ def convertLeadToAccount(rowIndex):
 def addContactToAccount(accountId, contactFields):
     acc_ws = sheets.get_worksheet("Accounts")
     if acc_ws is None:
-        raise Exception("Accounts sheet not found.")
+        raise Exception("Accounts data isn't available right now - contact your admin.")
     row_num = findRowByIdColumn_(acc_ws, "Account ID", accountId)
     if row_num == -1:
         raise Exception("Account not found: " + str(accountId))
@@ -312,9 +420,9 @@ def addContactToAccount(accountId, contactFields):
     row_data = dict(contactFields or {})
     row_data.update({
         "Contact ID": _uid("CON"),
-        "Account": account_name,
         "Created Time": _now_str(),
     })
+    _set_contact_account_link(row_data, account_name)
     return addRecordData("Contacts", row_data)
 
 
@@ -364,7 +472,7 @@ def recomputeAccountVisitStats_(accountId):
 def logVisit(accountId, visitDate, notes):
     acc_ws = sheets.get_worksheet("Accounts")
     if acc_ws is None:
-        raise Exception("Accounts sheet not found.")
+        raise Exception("Accounts data isn't available right now - contact your admin.")
     acc_row = findRowByIdColumn_(acc_ws, "Account ID", accountId)
     if acc_row == -1:
         raise Exception("Account not found: " + str(accountId))
@@ -411,7 +519,7 @@ def listVisits(accountId):
 def deleteVisit(visitId):
     ws = sheets.get_worksheet("Visits")
     if ws is None:
-        raise Exception("Visits sheet not found.")
+        raise Exception("Visits data isn't available right now - contact your admin.")
     row_num = findRowByIdColumn_(ws, "Visit ID", visitId)
     if row_num == -1:
         raise Exception("Visit not found: " + str(visitId))
@@ -446,11 +554,16 @@ def listAttachments(entityType, entityId):
     return out
 
 
+ATTACHMENT_ENTITY_SHEETS = {
+    "Lead": ("Leads", "Lead ID"), "Deal": ("Deals", "Deal ID"),
+    "Account": ("Accounts", "Account ID"), "Contact": ("Contacts", "Contact ID"),
+}
+
+
 def uploadAttachments(entityType, entityId, files):
-    if entityType not in ("Lead", "Deal"):
+    if entityType not in ATTACHMENT_ENTITY_SHEETS:
         raise Exception("Invalid entity type: " + str(entityType))
-    entity_sheet = "Leads" if entityType == "Lead" else "Deals"
-    id_col = "Lead ID" if entityType == "Lead" else "Deal ID"
+    entity_sheet, id_col = ATTACHMENT_ENTITY_SHEETS[entityType]
     ews = sheets.get_worksheet(entity_sheet)
     if ews is None or findRowByIdColumn_(ews, id_col, entityId) == -1:
         raise Exception("%s not found: %s" % (entityType, entityId))
@@ -479,7 +592,7 @@ def uploadAttachments(entityType, entityId, files):
 def deleteAttachment(attachmentId):
     ws = sheets.get_worksheet("Attachments")
     if ws is None:
-        raise Exception("Attachments sheet not found.")
+        raise Exception("Attachments aren't available right now - contact your admin.")
     row_num = findRowByIdColumn_(ws, "Attachment ID", attachmentId)
     if row_num == -1:
         raise Exception("Attachment not found: " + str(attachmentId))
@@ -827,6 +940,7 @@ def getHomeData():
                 latest_visit[acc] = ms
 
     overdue_visits = []
+    ensureAccountsVisitColumns_()
     acc_ws = sheets.get_worksheet("Accounts")
     if acc_ws is not None:
         headers, rows = _read(acc_ws)
@@ -834,6 +948,11 @@ def getHomeData():
         for row in rows:
             aid = row[c["Account ID"]] if "Account ID" in c and c["Account ID"] < len(row) else None
             if not aid:
+                continue
+            # A brand-new account with zero visits yet isn't "neglected" - give it a
+            # week before it starts showing up as overdue/never-visited.
+            created = _to_ms(row[c["Created Time"]]) if "Created Time" in c and c["Created Time"] < len(row) else None
+            if created is not None and created >= week_ago:
                 continue
             nm = (row[c["Account Name"]] if "Account Name" in c and row[c["Account Name"]] else aid)
             last = latest_visit.get(aid)
@@ -843,7 +962,10 @@ def getHomeData():
                 days = (now_ms - last) // DAY_MS
                 if days > 30:
                     overdue_visits.append({"name": nm, "lastVisit": fmt(last), "daysSince": days})
-    overdue_visits.sort(key=lambda x: (x["daysSince"] is not None, x["daysSince"] if x["daysSince"] is not None else 0), reverse=True)
+    # Never-visited accounts (daysSince=None) are the most urgent, not the least - treat
+    # them as infinitely overdue so they sort first instead of ranking behind every
+    # account with even one old visit.
+    overdue_visits.sort(key=lambda x: x["daysSince"] if x["daysSince"] is not None else float("inf"), reverse=True)
 
     return {
         "pastWeek": {"leads": leads_past_week, "visits": visits_past_week,
@@ -949,7 +1071,7 @@ def _repoint_attachments(entity_type, old_id, new_id):
 def mergeRecords(sheetName, rowIndices, masterRowIndex):
     ws = sheets.get_worksheet(sheetName)
     if ws is None:
-        raise Exception(sheetName + " sheet not found.")
+        raise Exception(sheetName + " data isn't available right now - contact your admin.")
     headers, rows = _read(ws)
     headers = [str(h).strip() for h in headers]
     last_col = len(headers)
@@ -1004,6 +1126,7 @@ def mergeRecords(sheetName, rowIndices, masterRowIndex):
 def getAnalyticsData(opts=None):
     opts = opts or {}
     now_ms = _now_ms()
+    week_ago = now_ms - 7 * DAY_MS
     UNASSIGNED = "(Unassigned)"
     rep_filter = opts.get("rep") or ""
     terr_filter = opts.get("territory") or ""
@@ -1178,6 +1301,7 @@ def getAnalyticsData(opts=None):
 
     # ---- ACCOUNTS segment map ----
     acc_seg = {}
+    ensureAccountsVisitColumns_()
     acc_ws = sheets.get_worksheet("Accounts")
     if acc_ws is not None:
         h, rows = _read(acc_ws)
@@ -1185,6 +1309,7 @@ def getAnalyticsData(opts=None):
         name_i = h.index("Account Name") if "Account Name" in h else -1
         rep_i = h.index("Sales Rep") if "Sales Rep" in h else -1
         terr_i = h.index("Territory") if "Territory" in h else -1
+        created_i = h.index("Created Time") if "Created Time" in h else -1
         for row in rows:
             aid = row[id_i] if id_i > -1 and id_i < len(row) else None
             if not aid:
@@ -1193,7 +1318,8 @@ def getAnalyticsData(opts=None):
             terr = row[terr_i] if terr_i > -1 and terr_i < len(row) else ""
             add_opt(rep_options, rep)
             add_opt(terr_options, terr)
-            acc_seg[aid] = {"rep": rep, "terr": terr,
+            created = _to_ms(row[created_i]) if created_i > -1 and created_i < len(row) else None
+            acc_seg[aid] = {"rep": rep, "terr": terr, "created": created,
                             "name": row[name_i] if name_i > -1 and name_i < len(row) and row[name_i] else aid}
 
     # ---- VISITS ----
@@ -1229,6 +1355,9 @@ def getAnalyticsData(opts=None):
     for aid, seg in acc_seg.items():
         if not seg_match(seg["rep"], seg["terr"]):
             continue
+        # Grace period: a brand-new account with zero visits yet isn't neglected.
+        if seg.get("created") is not None and seg["created"] >= week_ago:
+            continue
         last = latest_visit.get(aid)
         if not last:
             overdue.append({"name": seg["name"], "lastVisit": None, "daysSince": None})
@@ -1236,7 +1365,10 @@ def getAnalyticsData(opts=None):
             days = (now_ms - last) // DAY_MS
             if days > 30:
                 overdue.append({"name": seg["name"], "lastVisit": datetime.fromtimestamp(last / 1000).strftime("%Y-%m-%d"), "daysSince": days})
-    overdue.sort(key=lambda x: (x["daysSince"] is not None, x["daysSince"] if x["daysSince"] is not None else 0), reverse=True)
+    # Same fix as getHomeData's overdue_visits: never-visited accounts are infinitely
+    # overdue, not the least urgent - they should surface first, not get pushed behind
+    # (and potentially truncated past) every account with some visit history.
+    overdue.sort(key=lambda x: x["daysSince"] if x["daysSince"] is not None else float("inf"), reverse=True)
 
     win_rate = (closed_won / (closed_won + closed_lost)) if (closed_won + closed_lost) > 0 else None
     win_rate_prev = (closed_won_prev / (closed_won_prev + closed_lost_prev)) if (has_window and (closed_won_prev + closed_lost_prev) > 0) else None

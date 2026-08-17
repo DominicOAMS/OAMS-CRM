@@ -46,6 +46,16 @@
   let tableSearch = '';
   let tableFilterCol = '';
   let tableFilterVal = '';
+  let tableSortCol = '';
+  let tableSortDir = ''; // 'asc' | 'desc' | '' (unsorted)
+  // Set by "View Contacts" on an Account row, consumed once the Contacts tab's data
+  // has actually loaded (setting the filter before then would just get overwritten).
+  let pendingTableFilter = null;
+  // Same idea, for jumping from a Home dashboard row into a pre-searched table.
+  let pendingTableSearch = null;
+  // Same idea again, for running a follow-up action (e.g. opening Log Visit) once the
+  // target tab's data has actually loaded.
+  let pendingTableAction = null;
 
   document.addEventListener('DOMContentLoaded', () => switchTab('Home'));
 
@@ -277,8 +287,24 @@
 
   function renderTable(data) {
     window.currentTableData = data;
+    if (pendingTableFilter && pendingTableFilter.view === window.currentView) {
+      tableFilterCol = pendingTableFilter.col;
+      tableFilterVal = pendingTableFilter.val;
+      pendingTableFilter = null;
+    }
+    if (pendingTableSearch && pendingTableSearch.view === window.currentView) {
+      tableSearch = pendingTableSearch.query;
+      const searchInput = document.getElementById('tableSearch');
+      if (searchInput) searchInput.value = tableSearch;
+      pendingTableSearch = null;
+    }
     populateFilterColumnDropdown(data);
     renderTableRows();
+    if (pendingTableAction && pendingTableAction.view === window.currentView) {
+      const action = pendingTableAction;
+      pendingTableAction = null;
+      action.run(data);
+    }
   }
 
   // Rebuilds just the header + body from window.currentTableData, applying the current
@@ -289,26 +315,52 @@
     const thead = document.querySelector('.data-table thead');
     const tbody = document.querySelector('.data-table tbody');
 
-    // Render Headers with pinned action column
+    // Render Headers with pinned action column. Every visible header is clickable to
+    // sort by that column (asc -> desc -> unsorted); the current sort shows a ▲/▼.
     let headerHtml = '<tr><th class="sticky-col">⚡</th>';
     let visibleColCount = 0;
     data.columns.forEach(col => {
       if (HIDE_IDS && isIdColumn(col.name)) return;
       visibleColCount++;
-      headerHtml += `<th${isIdColumn(col.name) ? ' class="col-id"' : ''}>${col.name}</th>`;
+      const sortArrow = tableSortCol === col.name ? (tableSortDir === 'asc' ? ' <span class="sort-arrow">\u25B2</span>' : ' <span class="sort-arrow">\u25BC</span>') : '';
+      const safeName = col.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+      headerHtml += `<th class="sortable-col${isIdColumn(col.name) ? ' col-id' : ''}" onclick="toggleSort('${safeName}')">${col.name}${sortArrow}</th>`;
     });
     headerHtml += '</tr>';
     thead.innerHTML = headerHtml;
 
     // Render Data Rows (Inline Editing + Action Menu). Rows that don't match the search
     // /filter are SKIPPED, not renumbered - rowIndex stays the true index so editing,
-    // delete, convert, etc. keep pointing at the right sheet row.
-    let bodyHtml = '';
-    let matchCount = 0;
+    // delete, convert, etc. keep pointing at the right sheet row. Sorting reorders which
+    // rowIndex is visited first, but never changes what rowIndex means, so actions still
+    // land on the right record.
+    let rowIndices = [];
     data.rows.forEach((row, rowIndex) => {
       if (isRowBlank(row, data.columns)) return;
       if (!rowMatchesFilters(row, data.columns)) return;
-      matchCount++;
+      rowIndices.push(rowIndex);
+    });
+
+    if (tableSortCol) {
+      const sortColIdx = data.columns.findIndex(c => c.name === tableSortCol);
+      if (sortColIdx > -1) {
+        rowIndices.sort((ai, bi) => {
+          const av = data.rows[ai][sortColIdx];
+          const bv = data.rows[bi][sortColIdx];
+          const aBlank = av === null || av === undefined || String(av).trim() === '';
+          const bBlank = bv === null || bv === undefined || String(bv).trim() === '';
+          if (aBlank && bBlank) return 0;
+          if (aBlank) return 1;  // blanks always last, regardless of sort direction
+          if (bBlank) return -1;
+          return compareCells(av, bv) * (tableSortDir === 'desc' ? -1 : 1);
+        });
+      }
+    }
+
+    let bodyHtml = '';
+    let matchCount = rowIndices.length;
+    rowIndices.forEach(rowIndex => {
+      const row = data.rows[rowIndex];
       bodyHtml += `<tr>`;
 
       // Pinned Action Column
@@ -319,14 +371,18 @@
           
           if (window.currentView === 'Leads') {
             bodyHtml += `<a href="#" onclick="promptConvertLead(event, ${rowIndex})">Convert Lead</a>`;
-            bodyHtml += `<a href="#" onclick="openAttachmentsModal(event, ${rowIndex})">Attachments</a>`;
+            bodyHtml += `<a href="#" onclick="openRecordProfile(event, ${rowIndex})">View Profile</a>`;
           } else if (window.currentView === 'Accounts') {
             bodyHtml += `<a href="#" onclick="promptLogVisit(event, ${rowIndex})">Log Visit</a>`;
             bodyHtml += `<a href="#" onclick="openVisitsModal(event, ${rowIndex})">View Visits</a>`;
             bodyHtml += `<a href="#" onclick="promptAddContact(event, ${rowIndex})">Add Contact</a>`;
+            bodyHtml += `<a href="#" onclick="viewContactsForAccount(event, ${rowIndex})">View Contacts</a>`;
+            bodyHtml += `<a href="#" onclick="openRecordProfile(event, ${rowIndex})">View Profile</a>`;
+          } else if (window.currentView === 'Contacts') {
+            bodyHtml += `<a href="#" onclick="openRecordProfile(event, ${rowIndex})">View Profile</a>`;
           }
 
-          const needsMenuDivider = (window.currentView === 'Leads' || window.currentView === 'Accounts');
+          const needsMenuDivider = (window.currentView === 'Leads' || window.currentView === 'Accounts' || window.currentView === 'Contacts');
       bodyHtml += `<a href="#" onclick="promptDeleteRecord(event, ${rowIndex})" style="color: #d93025; ${needsMenuDivider ? 'border-top: 1px solid #e1e5eb;' : ''}">Delete</a>
           </div>
         </div>
@@ -455,10 +511,37 @@
 
   function resetTableFilters() {
     tableSearch = ''; tableFilterCol = ''; tableFilterVal = '';
+    tableSortCol = ''; tableSortDir = '';
     const s = document.getElementById('tableSearch'); if (s) s.value = '';
     const fc = document.getElementById('filterColumn'); if (fc) fc.value = '';
     const fv = document.getElementById('filterValue'); if (fv) { fv.innerHTML = ''; fv.style.display = 'none'; }
     const cb = document.getElementById('clearFiltersBtn'); if (cb) cb.style.display = 'none';
+  }
+
+  // Cycles a column through asc -> desc -> unsorted on repeated clicks; switching to a
+  // different column always starts fresh at asc.
+  window.toggleSort = function(colName) {
+    if (tableSortCol === colName) {
+      tableSortDir = tableSortDir === 'asc' ? 'desc' : (tableSortDir === 'desc' ? '' : 'asc');
+      if (tableSortDir === '') tableSortCol = '';
+    } else {
+      tableSortCol = colName;
+      tableSortDir = 'asc';
+    }
+    renderTableRows();
+  };
+
+  // Numeric-aware compare (so "100" sorts before "20", not after, and mixed
+  // alphanumeric values like "Row2"/"Row10" order sensibly). Blank handling is the
+  // caller's job (blanks are always pushed last regardless of sort direction).
+  function compareCells(a, b) {
+    const av = String(a === null || a === undefined ? '' : a).trim();
+    const bv = String(b === null || b === undefined ? '' : b).trim();
+    const an = parseFloat(av.replace(/,/g, ''));
+    const bn = parseFloat(bv.replace(/,/g, ''));
+    const bothNumeric = !isNaN(an) && !isNaN(bn) && /^-?[\d,]*\.?\d+$/.test(av) && /^-?[\d,]*\.?\d+$/.test(bv);
+    if (bothNumeric) return an - bn;
+    return av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });
   }
 
   document.getElementById('tableSearch').addEventListener('input', (e) => {
@@ -628,15 +711,37 @@
     e.preventDefault();
     const rowData = window.currentTableData.rows[rowIndex];
     const columns = window.currentTableData.columns;
-    
-    let company = 'Unknown Company';
-    let name = 'Unknown Name';
-    
+
+    let company = '';
+    let name = '';
+    let firstName = '';
+    let lastName = '';
+
     columns.forEach((col, idx) => {
       const colLower = col.name.toLowerCase();
       if (colLower === 'company' || colLower === 'account name') company = rowData[idx] || company;
       if (colLower === 'name' || colLower === 'contact person') name = rowData[idx] || name;
+      if (colLower === 'first name') firstName = rowData[idx] || firstName;
+      if (colLower === 'last name') lastName = rowData[idx] || lastName;
     });
+    // This schema (First Name + Last Name, no combined "Name" field) is exactly what
+    // this app's real Lead data actually uses - without this, the blank-name check
+    // just below would block every single conversion, since `name` would never be set.
+    if (!name) name = (firstName + ' ' + lastName).trim();
+
+    // Converting with a blank Company/Name used to silently write permanent
+    // "Unknown Company"/"Unknown Name" records - block it instead, since a rep
+    // confirming the dialog has no way to tell those are placeholders, not real data.
+    if (!company.trim() || !name.trim()) {
+      Swal.fire({
+        title: 'Missing info',
+        text: 'This Lead needs both a Company and a Name filled in before it can be converted.',
+        icon: 'warning',
+        heightAuto: false,
+        scrollbarPadding: false
+      });
+      return;
+    }
 
     Swal.fire({
       title: 'Convert Lead?',
@@ -645,7 +750,8 @@
                <b>Account:</b> ${company}<br>
                <b style="display:inline-block; margin-top:5px;">Contact:</b> ${name}<br>
                <b style="display:inline-block; margin-top:5px;">Deal:</b> ${company} Deal
-             </div>`,
+             </div>
+             <p style="margin-top:14px; font-size:13px; color:#5c6673;">This Lead will then be removed from the Leads list - its info lives on in the new Account/Contact/Deal above.</p>`,
       showCancelButton: true,
       confirmButtonText: 'Convert',
       confirmButtonColor: '#0088ff',
@@ -658,7 +764,26 @@
           .withSuccessHandler(data => {
             Swal.close();
             renderTable(data);
-            Swal.fire({ title: 'Converted!', icon: 'success', timer: 1500, showConfirmButton: false, heightAuto: false, scrollbarPadding: false });
+            // "Converted!" used to auto-close with no way to actually find what got
+            // created - a rep was left on the (now shorter) Leads list having to guess
+            // which tab to check. This jumps straight there instead.
+            Swal.fire({
+              title: 'Converted!',
+              text: `${company} is now an Account.`,
+              icon: 'success',
+              showConfirmButton: true,
+              confirmButtonText: 'View Account',
+              confirmButtonColor: '#0088ff',
+              showCancelButton: true,
+              cancelButtonText: 'Close',
+              heightAuto: false,
+              scrollbarPadding: false
+            }).then(viewResult => {
+              if (viewResult.isConfirmed) {
+                pendingTableFilter = { view: 'Accounts', col: 'Account Name', val: company };
+                switchTab('Accounts');
+              }
+            });
           })
           .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
           .convertLeadToAccount(rowIndex);
@@ -712,6 +837,23 @@
       })
       .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
       .getSheetData('Contacts');
+  };
+
+  // Jumps to the Contacts tab pre-filtered to this account's name - previously the
+  // only way to check who's already linked was switching tabs and scanning by eye.
+  window.viewContactsForAccount = function(e, rowIndex) {
+    e.preventDefault();
+    document.querySelectorAll('.action-menu-content').forEach(el => el.classList.remove('show'));
+
+    const rowData = window.currentTableData.rows[rowIndex];
+    const columns = window.currentTableData.columns;
+    const nameIdx = columns.findIndex(c => c.name === 'Account Name');
+    const accountName = nameIdx > -1 ? rowData[nameIdx] : '';
+
+    if (!accountName) { Swal.fire('Error', "Could not determine this account's name.", 'error'); return; }
+
+    pendingTableFilter = { view: 'Contacts', col: 'Account', val: accountName };
+    switchTab('Contacts');
   };
 
   // --- VISITS (Accounts) ---
@@ -897,7 +1039,17 @@
         rowData[input.dataset.col] = input.value;
         if (input.value.trim() !== '') hasData = true;
       });
-      
+
+      // A Contact saved without an Account link is orphaned - nothing connects it back
+      // to who it's actually for, and there was previously no validation stopping it.
+      if (window.currentView === 'Contacts') {
+        const accountCol = ['Account Name', 'Account'].find(name => name in rowData);
+        if (accountCol && !rowData[accountCol].trim()) {
+          Swal.fire({ title: 'Account is required', text: 'Pick an Account before adding this Contact.', icon: 'warning', heightAuto: false, scrollbarPadding: false });
+          return;
+        }
+      }
+
       if (hasData) {
         Swal.fire({ 
           title: 'Saving Data...', 
@@ -1406,6 +1558,7 @@
             <div id="action-menu-deal-${safeDealId}" class="action-menu-content">
               <a href="#" onclick="promptMoveDealToStage(event, '${safeDealId}')">Move to Stage</a>
               <a href="#" onclick="promptEditDeal(event, '${safeDealId}')">Edit Deal</a>
+              <a href="#" onclick="openAttachmentsModalForDeal(event, '${safeDealId}')">Attachments</a>
               <a href="#" onclick="promptDeleteDeal(event, '${safeDealId}')" style="color: #d93025; border-top: 1px solid #e1e5eb;">Delete</a>
             </div>
           </div>
@@ -1415,6 +1568,7 @@
           <span class="kanban-card-amount">${amount}</span>
           <span class="kanban-card-age">${created ? 'Created ' + escapeHtml(created) : ''}</span>
         </div>
+        <button class="kanban-card-move-btn" onclick="promptMoveDealToStage(event, '${safeDealId}')">Move ›</button>
       </div>`;
   }
 
@@ -1617,6 +1771,15 @@
       .map(col => {
         const fieldId = 'dyn-field-' + col.name.replace(/[^a-zA-Z0-9]/g, '_');
         const currentValue = valuesByName[col.name] || '';
+        if (col.name === 'Amount') {
+          // Same number/peso treatment promptBidAmount already gives Amount at the
+          // Proposed Bid stage - giving it here too means "50k" can't get typed in at
+          // deal creation and silently misparsed later by parseAmountValue's regex.
+          return `<div style="text-align:left; margin-bottom:10px;">
+            <label style="font-size:12px; color:#5c6673; display:block; margin-bottom:4px;">${escapeHtml(col.name)} (₱)</label>
+            <input id="${fieldId}" type="number" min="0" step="0.01" class="swal2-input" style="margin:0; width:100%; box-sizing:border-box;" value="${escapeHtml(currentValue)}">
+          </div>`;
+        }
         if (col.type === 'dropdown') {
           const optionsHtml = col.options.map(opt =>
             `<option value="${escapeHtml(opt)}" ${opt === currentValue ? 'selected' : ''}>${escapeHtml(opt)}</option>`
@@ -1712,6 +1875,15 @@
     return (num / (1024 * 1024)).toFixed(1) + ' MB';
   }
 
+  // Names every oversized file, not just the first - otherwise a batch of 5 with one
+  // large file names only that one and leaves the rep unsure the other 4 were also
+  // rejected (the whole batch is; nothing partial uploads).
+  function oversizedFilesMessage(oversized) {
+    const names = oversized.map(f => `"${f.name}"`).join(', ');
+    const verb = oversized.length > 1 ? 'are' : 'is';
+    return `${names} ${verb} over the ${MAX_ATTACHMENT_MB}MB limit.`;
+  }
+
   window.openAttachmentsModal = function(e, rowIndex) {
     e.preventDefault();
     document.querySelectorAll('.action-menu-content').forEach(el => el.classList.remove('show'));
@@ -1724,18 +1896,257 @@
     const leadLabel = nameIdx > -1 ? rowData[nameIdx] : 'this lead';
 
     if (!leadId) { Swal.fire('Error', 'Could not determine the Lead ID for this row.', 'error'); return; }
+    openAttachmentsModalFor('Lead', leadId, leadLabel);
+  };
 
+  // Attachments follow a Lead when it's converted to a Deal (the backend re-keys them),
+  // but there was previously no menu item on Deal cards to reach them again - this is
+  // the same modal, just addressed by Deal ID/name instead of a Lead row.
+  window.openAttachmentsModalForDeal = function(e, dealId) {
+    e.preventDefault();
+    document.querySelectorAll('.action-menu-content').forEach(el => el.classList.remove('show'));
+
+    const columns = window.currentTableData.columns;
+    const idIdx = columns.findIndex(c => c.name === 'Deal ID');
+    const nameIdx = columns.findIndex(c => c.name === 'Deal Name');
+    const row = idIdx > -1 ? window.currentTableData.rows.find(r => String(r[idIdx]) === String(dealId)) : null;
+    const dealLabel = row && nameIdx > -1 ? row[nameIdx] : 'this deal';
+
+    openAttachmentsModalFor('Deal', dealId, dealLabel);
+  };
+
+  function openAttachmentsModalFor(entityType, entityId, entityLabel) {
     Swal.fire({ title: 'Loading attachments...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
     google.script.run
       .withSuccessHandler(files => {
         Swal.close();
-        showAttachmentsModal(leadId, leadLabel, files);
+        showAttachmentsModal(entityType, entityId, entityLabel, files);
       })
       .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
-      .listAttachments('Lead', leadId);
+      .listAttachments(entityType, entityId);
+  }
+
+  // --- RECORD PROFILE (all fields at a glance + attachments in one place, instead of
+  // scrolling a wide table row and hunting for a separate Attachments action) ---
+  function getColVal(row, columns, name) {
+    const idx = columns.findIndex(c => c.name === name);
+    return idx > -1 ? (row[idx] || '') : '';
+  }
+
+  const PROFILE_ENTITY_CONFIG = {
+    Leads: {
+      entityType: 'Lead', idCol: 'Lead ID',
+      getTitle: (row, cols) => getColVal(row, cols, 'Company') || 'Untitled',
+    },
+    Accounts: {
+      entityType: 'Account', idCol: 'Account ID',
+      getTitle: (row, cols) => getColVal(row, cols, 'Account Name') || 'Untitled',
+    },
+    Contacts: {
+      entityType: 'Contact', idCol: 'Contact ID',
+      // This schema has no combined "Name" field, only First Name/Last Name (same gap
+      // fixed for Lead conversion earlier) - compose it, with "Name" as a fallback for
+      // a Contacts sheet that does use a combined field.
+      getTitle: (row, cols) => {
+        const combined = (getColVal(row, cols, 'First Name') + ' ' + getColVal(row, cols, 'Last Name')).trim();
+        return combined || getColVal(row, cols, 'Name') || 'Untitled';
+      },
+    },
   };
 
-  function renderAttachmentsListHtml(files) {
+  window.openRecordProfile = function(e, rowIndex) {
+    e.preventDefault();
+    document.querySelectorAll('.action-menu-content').forEach(el => el.classList.remove('show'));
+    renderProfileModal(rowIndex);
+  };
+
+  // Rebuilds the whole profile modal from scratch (fields + a fresh attachments
+  // fetch). Used both for the initial open and to "return" to the profile after a
+  // delete/upload - this Swal shim doesn't stack modals, so the confirm-delete dialog
+  // fully replaces the profile's DOM (including #profile-attachments-list), and just
+  // patching that element in place silently no-ops once it's gone.
+  function renderProfileModal(rowIndex) {
+    const config = PROFILE_ENTITY_CONFIG[window.currentView];
+    if (!config) return;
+
+    const rowData = window.currentTableData.rows[rowIndex];
+    const columns = window.currentTableData.columns;
+    const idIdx = columns.findIndex(c => c.name === config.idCol);
+    const entityId = idIdx > -1 ? rowData[idIdx] : null;
+    const title = config.getTitle(rowData, columns);
+
+    if (!entityId) { Swal.fire('Error', `Could not determine the ${config.idCol} for this row.`, 'error'); return; }
+
+    const fieldsHtml = buildProfileFieldsHtml(rowData, columns, rowIndex);
+
+    Swal.fire({
+      title: escapeHtml(title),
+      html: `
+        <div class="profile-fields-grid">${fieldsHtml}</div>
+        <div class="profile-attachments-section">
+          <h4 class="profile-section-title">Attachments</h4>
+          <div id="profile-attachments-list">Loading...</div>
+          <input type="file" id="profile-attachments-input" multiple style="width:100%; margin-top:10px;">
+          <p style="font-size:11px; color:#a0aabf; margin-top:6px;">Max ${MAX_ATTACHMENT_MB}MB per file.</p>
+        </div>
+      `,
+      width: 640,
+      showConfirmButton: false,
+      showCloseButton: true,
+      heightAuto: false,
+      scrollbarPadding: false,
+      didOpen: () => {
+        loadProfileAttachments(config.entityType, entityId, rowIndex);
+        document.getElementById('profile-attachments-input').addEventListener('change', (ev) => handleProfileAttachmentFilesSelected(ev, config.entityType, entityId, rowIndex));
+      }
+    });
+  }
+
+  // Every field is click-to-edit, same interaction as the main table's cells
+  // (startCellEdit) - kept as its own implementation since the DOM shape here
+  // (label-above-value divs) differs from a table cell, but it saves through the
+  // exact same updateCellData RPC.
+  function buildProfileFieldsHtml(rowData, columns, rowIndex) {
+    return columns
+      .map((c, idx) => ({ col: c, idx }))
+      .filter(({ col }) => !isIdColumn(col.name))
+      .map(({ col, idx }) => {
+        const val = rowData[idx];
+        return `<div class="profile-field">
+          <div class="profile-field-label">${escapeHtml(col.name)}</div>
+          <div class="profile-field-value" onclick="startProfileFieldEdit(this, ${rowIndex}, ${idx})">${formatProfileFieldValue(val)}</div>
+        </div>`;
+      }).join('');
+  }
+
+  function formatProfileFieldValue(val) {
+    const str = (val === null || val === undefined) ? '' : String(val);
+    return str.trim() === '' ? '<span class="profile-field-empty">—</span>' : escapeHtml(str);
+  }
+
+  window.startProfileFieldEdit = function(el, rowIndex, colIndex) {
+    const col = window.currentTableData.columns[colIndex];
+    const raw = window.currentTableData.rows[rowIndex][colIndex];
+    const original = (raw === null || raw === undefined) ? '' : String(raw);
+
+    let editor;
+    if (col.type === 'dropdown') {
+      editor = document.createElement('select');
+      editor.className = 'profile-field-input';
+      const blank = document.createElement('option');
+      blank.value = '';
+      editor.appendChild(blank);
+      (col.options || []).forEach(opt => {
+        const o = document.createElement('option');
+        o.value = opt; o.textContent = opt;
+        if (opt === original) o.selected = true;
+        editor.appendChild(o);
+      });
+    } else {
+      editor = document.createElement('input');
+      editor.type = 'text';
+      editor.className = 'profile-field-input';
+      editor.value = original;
+    }
+
+    el.innerHTML = '';
+    el.removeAttribute('onclick');
+    el.appendChild(editor);
+    editor.focus();
+    if (editor.select) editor.select();
+
+    let settled = false;
+    const commit = () => {
+      if (settled) return;
+      settled = true;
+      const newVal = editor.value;
+      window.currentTableData.rows[rowIndex][colIndex] = newVal;
+      renderProfileFieldView(el, rowIndex, colIndex);
+      if (newVal !== original) {
+        google.script.run
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .updateCellData(window.currentView, rowIndex, col.name, newVal);
+      }
+    };
+    const cancel = () => {
+      settled = true;
+      renderProfileFieldView(el, rowIndex, colIndex);
+    };
+
+    editor.addEventListener('blur', commit);
+    editor.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); editor.blur(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); cancel(); }
+    });
+  };
+
+  function renderProfileFieldView(el, rowIndex, colIndex) {
+    const val = window.currentTableData.rows[rowIndex][colIndex];
+    el.innerHTML = formatProfileFieldValue(val);
+    el.setAttribute('onclick', `startProfileFieldEdit(this, ${rowIndex}, ${colIndex})`);
+  }
+
+  function loadProfileAttachments(entityType, entityId, rowIndex) {
+    google.script.run
+      .withSuccessHandler(files => {
+        const list = document.getElementById('profile-attachments-list');
+        if (list) list.innerHTML = renderAttachmentsListHtml(files, id => `profileDeleteAttachment('${id}', ${rowIndex})`);
+      })
+      .withFailureHandler(err => {
+        const list = document.getElementById('profile-attachments-list');
+        if (list) list.innerHTML = `<p style="color:#d93025; font-size:13px;">${escapeHtml(err.message)}</p>`;
+      })
+      .listAttachments(entityType, entityId);
+  }
+
+  function handleProfileAttachmentFilesSelected(e, entityType, entityId, rowIndex) {
+    const fileList = Array.from(e.target.files || []);
+    if (fileList.length === 0) return;
+
+    const oversized = fileList.filter(f => f.size > MAX_ATTACHMENT_MB * 1024 * 1024);
+    if (oversized.length > 0) {
+      Swal.fire({ title: 'File too large', text: oversizedFilesMessage(oversized), icon: 'error', heightAuto: false, scrollbarPadding: false })
+        .then(() => renderProfileModal(rowIndex));
+      return;
+    }
+
+    const list = document.getElementById('profile-attachments-list');
+    if (list) list.innerHTML = `Uploading ${fileList.length > 1 ? fileList.length + ' files' : 'file'}...`;
+
+    Promise.all(fileList.map(f => readFileAsBase64(f))).then(encodedFiles => {
+      google.script.run
+        .withSuccessHandler(() => { renderProfileModal(rowIndex); })
+        .withFailureHandler(err => Swal.fire('Error', err.message, 'error').then(() => renderProfileModal(rowIndex)))
+        .uploadAttachments(entityType, entityId, encodedFiles);
+    }).catch(() => {
+      Swal.fire('Error', 'Could not read one or more files.', 'error').then(() => renderProfileModal(rowIndex));
+    });
+  }
+
+  window.profileDeleteAttachment = function(attachmentId, rowIndex) {
+    Swal.fire({
+      title: 'Delete Attachment?',
+      text: "You won't be able to revert this!",
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#d93025',
+      confirmButtonText: 'Delete',
+      heightAuto: false,
+      scrollbarPadding: false
+    }).then(result => {
+      if (result.isConfirmed) {
+        google.script.run
+          .withSuccessHandler(() => { renderProfileModal(rowIndex); })
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error').then(() => renderProfileModal(rowIndex)))
+          .deleteAttachment(attachmentId);
+      } else {
+        renderProfileModal(rowIndex);
+      }
+    });
+  };
+
+  function renderAttachmentsListHtml(files, buildDeleteOnclick) {
+    buildDeleteOnclick = buildDeleteOnclick || (id => `promptDeleteAttachment('${id}')`);
     if (!files || files.length === 0) {
       return '<p style="color: #a0aabf; text-align: center; padding: 20px;">No attachments yet.</p>';
     }
@@ -1745,15 +2156,15 @@
           <a href="${escapeHtml(f.driveFileUrl)}" target="_blank" rel="noopener" style="font-size:13px; color:#11141a; text-decoration:none; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(f.fileName)}">${escapeHtml(f.fileName)}</a>
           <span style="font-size:11px; color:#a0aabf;">${formatFileSize(f.size)}</span>
         </div>
-        <button class="btn btn-secondary" style="padding:4px 10px; font-size:12px; color:#d93025; border-color:#fad2d0; background-color:#fff; flex-shrink:0;" onclick="promptDeleteAttachment('${escapeHtml(f.attachmentId)}')">Delete</button>
+        <button class="btn btn-secondary" style="padding:4px 10px; font-size:12px; color:#d93025; border-color:#fad2d0; background-color:#fff; flex-shrink:0;" onclick="${buildDeleteOnclick(escapeHtml(f.attachmentId))}">Delete</button>
       </div>`).join('');
   }
 
-  function showAttachmentsModal(leadId, leadLabel, files) {
-    currentAttachmentsContext = { leadId: leadId, leadLabel: leadLabel, files: files };
+  function showAttachmentsModal(entityType, entityId, entityLabel, files) {
+    currentAttachmentsContext = { entityType: entityType, entityId: entityId, entityLabel: entityLabel, files: files };
 
     Swal.fire({
-      title: `Attachments - ${leadLabel}`,
+      title: `Attachments - ${entityLabel}`,
       html: `
         <div id="attachments-list" style="text-align:left; max-height:280px; overflow-y:auto; margin-bottom:15px;">
           ${renderAttachmentsListHtml(files)}
@@ -1773,12 +2184,11 @@
 
   function refreshAttachmentsModal() {
     if (!currentAttachmentsContext) return;
-    const leadId = currentAttachmentsContext.leadId;
-    const leadLabel = currentAttachmentsContext.leadLabel;
+    const { entityType, entityId, entityLabel } = currentAttachmentsContext;
     google.script.run
-      .withSuccessHandler(files => showAttachmentsModal(leadId, leadLabel, files))
+      .withSuccessHandler(files => showAttachmentsModal(entityType, entityId, entityLabel, files))
       .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
-      .listAttachments('Lead', leadId);
+      .listAttachments(entityType, entityId);
   }
 
   function readFileAsBase64(file) {
@@ -1799,13 +2209,12 @@
     const fileList = Array.from(e.target.files || []);
     if (fileList.length === 0) return;
 
-    const leadId = currentAttachmentsContext.leadId;
-    const leadLabel = currentAttachmentsContext.leadLabel;
+    const { entityType, entityId, entityLabel } = currentAttachmentsContext;
 
     const oversized = fileList.filter(f => f.size > MAX_ATTACHMENT_MB * 1024 * 1024);
     if (oversized.length > 0) {
-      Swal.fire({ title: 'File too large', text: `"${oversized[0].name}" is over the ${MAX_ATTACHMENT_MB}MB limit.`, icon: 'error', heightAuto: false, scrollbarPadding: false })
-        .then(() => showAttachmentsModal(leadId, leadLabel, currentAttachmentsContext.files));
+      Swal.fire({ title: 'File too large', text: oversizedFilesMessage(oversized), icon: 'error', heightAuto: false, scrollbarPadding: false })
+        .then(() => showAttachmentsModal(entityType, entityId, entityLabel, currentAttachmentsContext.files));
       return;
     }
 
@@ -1815,12 +2224,12 @@
       google.script.run
         .withSuccessHandler(files => {
           Swal.close();
-          showAttachmentsModal(leadId, leadLabel, files);
+          showAttachmentsModal(entityType, entityId, entityLabel, files);
         })
         .withFailureHandler(err => {
           Swal.fire('Error', err.message, 'error').then(() => refreshAttachmentsModal());
         })
-        .uploadAttachments('Lead', leadId, encodedFiles);
+        .uploadAttachments(entityType, entityId, encodedFiles);
     }).catch(() => {
       Swal.fire('Error', 'Could not read one or more files.', 'error').then(() => refreshAttachmentsModal());
     });
@@ -1838,13 +2247,12 @@
       scrollbarPadding: false
     }).then(result => {
       if (result.isConfirmed) {
-        const leadId = currentAttachmentsContext.leadId;
-        const leadLabel = currentAttachmentsContext.leadLabel;
+        const { entityType, entityId, entityLabel } = currentAttachmentsContext;
         Swal.fire({ title: 'Deleting...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
         google.script.run
           .withSuccessHandler(files => {
             Swal.close();
-            showAttachmentsModal(leadId, leadLabel, files);
+            showAttachmentsModal(entityType, entityId, entityLabel, files);
           })
           .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
           .deleteAttachment(attachmentId);
@@ -2309,8 +2717,8 @@
     Swal.fire({
       title: `Delete ${item.isFolder ? 'folder' : 'file'}?`,
       html: item.isFolder
-        ? `<b>${escapeHtml(item.name)}</b> and everything inside it will be moved to Drive Trash.`
-        : `<b>${escapeHtml(item.name)}</b> will be moved to Drive Trash.`,
+        ? `<b>${escapeHtml(item.name)}</b> and everything inside it will be deleted. You won't be able to revert this!`
+        : `<b>${escapeHtml(item.name)}</b> will be deleted. You won't be able to revert this!`,
       icon: 'warning',
       showCancelButton: true,
       confirmButtonColor: '#d93025',
@@ -2361,7 +2769,7 @@
 
     const oversized = fileList.filter(f => f.size > MAX_ATTACHMENT_MB * 1024 * 1024);
     if (oversized.length > 0) {
-      Swal.fire({ title: 'File too large', text: `"${oversized[0].name}" is over the ${MAX_ATTACHMENT_MB}MB limit.`, icon: 'error', heightAuto: false, scrollbarPadding: false });
+      Swal.fire({ title: 'File too large', text: oversizedFilesMessage(oversized), icon: 'error', heightAuto: false, scrollbarPadding: false });
       return;
     }
 
@@ -2396,7 +2804,7 @@
     document.getElementById('home-followups-count').innerText = d.followUps.count;
     document.getElementById('home-followups').innerHTML = d.followUps.items.length
       ? d.followUps.items.map(f => `
-        <div class="home-row">
+        <div class="home-row home-row-clickable" onclick="jumpToFollowUp('${escapeHtml(f.entity)}', '${escapeHtml(f.name).replace(/'/g, "\\'")}')">
           <div class="home-row-main"><span class="home-tag">${escapeHtml(f.entity)}</span> ${escapeHtml(f.name)}</div>
           <span class="home-row-meta ${f.daysOverdue > 0 ? 'is-late' : ''}">${f.daysOverdue > 0 ? f.daysOverdue + 'd overdue' : 'due today'} · ${escapeHtml(f.date)}</span>
         </div>`).join('')
@@ -2405,7 +2813,7 @@
     document.getElementById('home-overdue-count').innerText = d.overdueVisits.count;
     document.getElementById('home-overdue').innerHTML = d.overdueVisits.items.length
       ? d.overdueVisits.items.map(a => `
-        <div class="home-row">
+        <div class="home-row home-row-clickable" onclick="jumpToAccountVisit('${escapeHtml(a.name).replace(/'/g, "\\'")}')">
           <div class="home-row-main">${escapeHtml(a.name)}</div>
           <span class="home-row-meta ${a.daysSince === null ? 'is-never' : 'is-late'}">${a.daysSince === null ? 'never visited' : a.daysSince + ' days ago'}</span>
         </div>`).join('')
@@ -2414,12 +2822,40 @@
     document.getElementById('home-stale-count').innerText = d.staleBids.count;
     document.getElementById('home-stale').innerHTML = d.staleBids.items.length
       ? d.staleBids.items.map(b => `
-        <div class="home-row">
+        <div class="home-row home-row-clickable" onclick="switchTab('Deals')">
           <div class="home-row-main">${escapeHtml(b.name)}${b.account ? ' <span class="home-sub">· ' + escapeHtml(b.account) + '</span>' : ''}</div>
           <span class="home-row-meta is-late">${b.daysOpen}d open</span>
         </div>`).join('')
       : '<p class="home-empty">No bids sitting too long.</p>';
   }
+
+  // Home dashboard rows previously did nothing when tapped - a rep saw "overdue for a
+  // visit" but had to remember the name, switch tabs, and search for it themselves.
+
+  window.jumpToFollowUp = function(entity, name) {
+    if (entity === 'Deal') {
+      switchTab('Deals'); // Kanban has no per-card search yet; landing on the board is still a real improvement over nothing happening.
+      return;
+    }
+    pendingTableSearch = { view: 'Leads', query: name };
+    switchTab('Leads');
+  };
+
+  window.jumpToAccountVisit = function(accountName) {
+    pendingTableAction = {
+      view: 'Accounts',
+      run: (data) => {
+        const nameIdx = data.columns.findIndex(c => c.name === 'Account Name');
+        const rowIndex = nameIdx > -1 ? data.rows.findIndex(r => r[nameIdx] === accountName) : -1;
+        if (rowIndex > -1) {
+          promptLogVisit({ preventDefault: () => {} }, rowIndex);
+        } else {
+          Swal.fire('Error', `Could not find "${accountName}" in Accounts.`, 'error');
+        }
+      }
+    };
+    switchTab('Accounts');
+  };
 
   // Duplicate detect & merge UI removed (backend findDuplicateGroups/mergeRecords in
   // logic.py are untouched if this needs to come back later).

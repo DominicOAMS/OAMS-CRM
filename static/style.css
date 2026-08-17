@@ -568,7 +568,14 @@
     position: sticky;
     left: 0;
     background-color: inherit;
-    z-index: 2;
+    /* Being `position: sticky` with its own z-index makes this <td> a stacking
+       context - the action menu inside it is `position: fixed` with z-index:1000,
+       but that value only wins comparisons made *within* this context. Against an
+       unrelated element like .table-footer (z-index:10, its own separate stacking
+       context), it's this td's z-index that actually gets compared, so it must clear
+       10 or the fixed-position menu paints underneath the footer near the bottom of
+       the table - exactly what made "Delete" unreachable in a menu opened near it. */
+    z-index: 20;
     width: 30px;
     text-align: center;
     border-right: 1px solid var(--color-border);
@@ -577,7 +584,7 @@
 
   .data-table th.sticky-col {
     background-color: #f8f9fa;
-    z-index: 3;
+    z-index: 21;
   }
 
   /* "Add new record" row (in <tfoot>) - pinned to the bottom of .table-scroll's own
@@ -590,11 +597,11 @@
     bottom: 0;
     background-color: #f9fbfd;
     border-top: 2px solid var(--color-border);
-    z-index: 4;
+    z-index: 22;
   }
 
   .data-table tfoot td.sticky-col {
-    z-index: 5;
+    z-index: 23;
   }
 
   /* Action Menu Styles */

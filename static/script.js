@@ -739,6 +739,42 @@
   // with overflow scrolling, so an absolutely-positioned menu got clipped at the
   // column edge (the cut-off "M / Ed / De" menu). Fixed positioning escapes every
   // scroll container, and we flip left/up near the screen edges so it always fits.
+  //
+  // Escaping the scroll container isn't the same as escaping its STACKING CONTEXT,
+  // though - the menu's parent <td class="sticky-col"> is itself position:sticky
+  // with its own z-index, which makes the td a stacking context. The menu's own
+  // z-index:1000 only wins comparisons made *inside* that td; against an unrelated
+  // sibling stacking context elsewhere on the page (the table's sticky footer row,
+  // the outer scrollbar/record-count bar, a Kanban column) it's the TD'S z-index
+  // that actually gets compared, and loses. Tried bumping the td's static z-index
+  // once already - it beat one overlapping element but then lost to a *different*
+  // one, because these sticky elements have a real, order-dependent relationship
+  // with each other in the normal (no menu open) case that a single reshuffled
+  // number can't satisfy for every case at once. Fixing it for real: temporarily
+  // boost whichever positioned-with-z-index ancestor is trapping the OPEN menu to
+  // the max z-index, only while it's open, then put it back - wins against
+  // anything, in any container this menu ever ends up in.
+  let elevatedAncestors = [];
+
+  function elevateMenuAncestors(menu) {
+    const boosted = [];
+    let el = menu.parentElement;
+    while (el && el !== document.body) {
+      const cs = getComputedStyle(el);
+      if (cs.position !== 'static' && cs.zIndex !== 'auto') {
+        boosted.push({ el, prevZIndex: el.style.zIndex });
+        el.style.zIndex = '2147483647';
+      }
+      el = el.parentElement;
+    }
+    return boosted;
+  }
+
+  function restoreElevatedAncestors() {
+    elevatedAncestors.forEach(({ el, prevZIndex }) => { el.style.zIndex = prevZIndex; });
+    elevatedAncestors = [];
+  }
+
   window.toggleActionMenu = function(e, index) {
     e.stopPropagation();
     const menu = document.getElementById('action-menu-' + index);
@@ -748,6 +784,7 @@
     if (willShow) {
       menu.classList.add('show');
       positionActionMenu(menu, e.currentTarget);
+      elevatedAncestors = elevateMenuAncestors(menu);
     }
   };
 
@@ -776,6 +813,7 @@
 
   function closeAllActionMenus() {
     document.querySelectorAll('.action-menu-content').forEach(el => el.classList.remove('show'));
+    restoreElevatedAncestors();
   }
 
   window.onclick = function(e) {

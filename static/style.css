@@ -569,13 +569,17 @@
     left: 0;
     background-color: inherit;
     /* Being `position: sticky` with its own z-index makes this <td> a stacking
-       context - the action menu inside it is `position: fixed` with z-index:1000,
-       but that value only wins comparisons made *within* this context. Against an
-       unrelated element like .table-footer (z-index:10, its own separate stacking
-       context), it's this td's z-index that actually gets compared, so it must clear
-       10 or the fixed-position menu paints underneath the footer near the bottom of
-       the table - exactly what made "Delete" unreachable in a menu opened near it. */
-    z-index: 20;
+       context - a fixed-position action menu inside it only wins z-index
+       comparisons made *within* this context, not against unrelated sibling
+       elements like .table-footer or the tfoot add-row (each their own stacking
+       context too). Rather than juggle this cell's static z-index against every
+       other sticky element on the page (which was tried and just traded one
+       overlap bug for another - the add-row is deliberately above these cells in
+       the normal, no-menu-open case, so it can paint over scrolled body rows), the
+       open menu's own containing cell gets a one-off z-index boost above
+       everything for as long as it's open - see elevateMenuAncestors in
+       script.js. This is the base, everyday value. */
+    z-index: 2;
     width: 30px;
     text-align: center;
     border-right: 1px solid var(--color-border);
@@ -584,7 +588,7 @@
 
   .data-table th.sticky-col {
     background-color: #f8f9fa;
-    z-index: 21;
+    z-index: 3;
   }
 
   /* "Add new record" row (in <tfoot>) - pinned to the bottom of .table-scroll's own
@@ -597,11 +601,11 @@
     bottom: 0;
     background-color: #f9fbfd;
     border-top: 2px solid var(--color-border);
-    z-index: 22;
+    z-index: 4;
   }
 
   .data-table tfoot td.sticky-col {
-    z-index: 23;
+    z-index: 5;
   }
 
   /* Action Menu Styles */

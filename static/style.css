@@ -201,13 +201,15 @@
   }
 
   .top-bar {
-    height: 64px;
+    min-height: 64px;
     background-color: #ffffff;
     border-bottom: 1px solid var(--color-border);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 24px;
+    flex-wrap: wrap;
+    row-gap: 8px;
+    padding: 12px 24px;
     box-shadow: var(--shadow-sm);
     flex-shrink: 0;
   }
@@ -219,8 +221,15 @@
     font-weight: 700;
   }
 
+  /* flex-wrap here (plus min-height/wrap on .top-bar above) is a safety net, not the
+     normal case - these buttons comfortably fit on one line at any screen size this app
+     targets. But a fixed single-line height with no wrap turns any unexpected width
+     pressure (a wider fallback font when Manrope fails to load, an aggressive OS/browser
+     zoom level) into a button silently clipped off past the edge of the screen instead
+     of visibly dropping to a second line. */
   .top-bar-buttons {
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
   }
 
@@ -379,11 +388,21 @@
     z-index: 10;
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 10px;
     padding: 8px 4px;
     margin-top: 8px;
     background: var(--color-bg);
     border-top: 1px solid var(--color-border);
+  }
+
+  /* Same safety-net reasoning as .top-bar-buttons above - this is the one item in the
+     row actually meant to flex, so it needs to be free to shrink all the way to 0
+     under width pressure (a flex item's default min-width:auto would otherwise refuse
+     to shrink below its content size) rather than pushing the record count after it
+     past the row's own edge. */
+  .table-scrollbar-track {
+    min-width: 0;
   }
 
   .table-scroll-btn {

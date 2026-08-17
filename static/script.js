@@ -339,6 +339,9 @@
     // Manage Columns / Import Data only make sense for the spreadsheet-backed tables.
     document.getElementById('manageColumnsBtn').style.display = isTableView ? 'inline-block' : 'none';
     document.getElementById('importBtn').style.display = isTableView ? 'inline-block' : 'none';
+    const newRecordBtn = document.getElementById('newRecordBtn');
+    newRecordBtn.style.display = isTableView ? 'inline-block' : 'none';
+    if (isTableView) newRecordBtn.textContent = '+ New ' + NEW_RECORD_LABEL[viewName];
     document.getElementById('tableToolbar').style.display = isTableView ? 'flex' : 'none';
     document.getElementById('tableFooter').style.display = isTableView ? 'flex' : 'none';
     document.getElementById('kanbanToolbar').style.display = viewName === 'Deals' ? 'flex' : 'none';
@@ -1937,6 +1940,60 @@
           .withSuccessHandler(data => { Swal.close(); renderDealsBoard(data); })
           .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
           .addNewDeal(result.value);
+      }
+    });
+  });
+
+  // "+ New" button beside Import Data - a modal form alternative to typing straight
+  // into the sticky add-row at the bottom of the table (which is easy to miss on a
+  // long table, and requires scrolling all the way down first).
+  const NEW_RECORD_LABEL = { Leads: 'Lead', Contacts: 'Contact', Accounts: 'Account' };
+  const NEW_RECORD_SYSTEM_FIELDS = {
+    Leads: ['Lead ID'],
+    Contacts: ['Contact ID'],
+    // Last Visit/Visit Count are maintained by the Log Visit feature, not entered by hand.
+    Accounts: ['Account ID', 'Last Visit', 'Visit Count', 'Created Time'],
+  };
+
+  document.getElementById('newRecordBtn').addEventListener('click', () => {
+    const view = window.currentView;
+    const columns = window.currentTableData.columns;
+    const excludeFields = NEW_RECORD_SYSTEM_FIELDS[view] || [];
+    const label = NEW_RECORD_LABEL[view] || view;
+
+    Swal.fire({
+      title: `New ${label}`,
+      html: buildDynamicFieldsHtml(columns, excludeFields, {}),
+      showCancelButton: true,
+      confirmButtonText: `Create ${label}`,
+      confirmButtonColor: '#0088ff',
+      heightAuto: false,
+      scrollbarPadding: false,
+      preConfirm: () => {
+        const values = readDynamicFieldsValues(columns, excludeFields);
+        // Same rule as the inline add-row (handleInlineEnter) - a Contact saved
+        // without an Account link is orphaned, with nothing connecting it back to
+        // who it's actually for.
+        if (view === 'Contacts') {
+          const accountCol = ['Account Name', 'Account'].find(name => name in values);
+          if (accountCol && !values[accountCol].trim()) {
+            Swal.showValidationMessage('Pick an Account before adding this Contact.');
+            return false;
+          }
+        }
+        return values;
+      }
+    }).then(result => {
+      if (result.isConfirmed) {
+        Swal.fire({ title: `Creating ${label}...`, allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+        google.script.run
+          .withSuccessHandler(data => {
+            Swal.close();
+            renderTable(data);
+            Swal.fire({ title: `${label} added`, icon: 'success', timer: 1500, showConfirmButton: false, heightAuto: false, scrollbarPadding: false });
+          })
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .addRecordData(view, result.value);
       }
     });
   });

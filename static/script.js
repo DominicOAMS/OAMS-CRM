@@ -210,6 +210,84 @@
     return /\bid$/i.test((name || '').toString().trim());
   }
 
+  // Reps type dates free-hand ("july72026", "june 2 2025", "07/02/2026") and expect
+  // them to land in one consistent format - otherwise the same field ends up with a
+  // mix of styles that sort/compare inconsistently. Detected by column name so it
+  // applies wherever a date-shaped field shows up (Date of Last Visit, Closed Date,
+  // Visit Date, Date of Birth, Next Follow-up) without needing a schema-wide "type".
+  function isDateColumnName(name) {
+    return /date|follow-?up/i.test((name || '').toString());
+  }
+
+  const MONTH_NAMES = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+
+  function isoDateFromParts(yearStr, month, dayStr) {
+    let year = parseInt(yearStr, 10);
+    if (yearStr.length === 2) year += (year < 70 ? 2000 : 1900);
+    const mo = parseInt(month, 10);
+    const day = parseInt(dayStr, 10);
+    if (!year || mo < 1 || mo > 12 || day < 1 || day > 31) return null;
+    const pad = n => String(n).padStart(2, '0');
+    return `${year}-${pad(mo)}-${pad(day)}`;
+  }
+
+  // Best-effort loose date parser - returns "YYYY-MM-DD" on success, or null if the
+  // text isn't recognizable as a date (caller then leaves the original text alone
+  // rather than clobbering something that wasn't meant to be a date).
+  function parseLooseDate(input) {
+    const s = (input || '').toString().trim();
+    if (!s) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const lower = s.toLowerCase();
+
+    for (let i = 0; i < MONTH_NAMES.length; i++) {
+      const full = MONTH_NAMES[i], abbr = full.slice(0, 3);
+      const namePattern = `(?:${full}|${abbr})`;
+      const monthNum = i + 1;
+
+      // "july 7 2026", "july7,2026", "jul. 7 2026"
+      let m = lower.match(new RegExp(`^${namePattern}[\\s,.]*(\\d{1,2})[\\s,.]+(\\d{2,4})$`));
+      if (m) return isoDateFromParts(m[2], monthNum, m[1]);
+
+      // "7 july 2026"
+      m = lower.match(new RegExp(`^(\\d{1,2})[\\s,.]*${namePattern}[\\s,.]+(\\d{2,4})$`));
+      if (m) return isoDateFromParts(m[2], monthNum, m[1]);
+
+      // "july72026" - day and year run together with no separator; assume a 4-digit
+      // year and whatever digits are left (1 or 2) are the day.
+      m = lower.match(new RegExp(`^${namePattern}(\\d{5,6})$`));
+      if (m) {
+        const digits = m[1];
+        const day = digits.length === 5 ? digits.slice(0, 1) : digits.slice(0, 2);
+        const year = digits.length === 5 ? digits.slice(1) : digits.slice(2);
+        return isoDateFromParts(year, monthNum, day);
+      }
+    }
+
+    // Numeric formats: "2026-7-2", "07/02/2026", "7-2-26"
+    const m = s.match(/^(\d{1,4})[\/\-.](\d{1,2})[\/\-.](\d{1,4})$/);
+    if (m) {
+      const [, a, b, c] = m;
+      if (a.length === 4) return isoDateFromParts(a, b, c);
+      if (c.length === 2 || c.length === 4) {
+        let month = a, day = b;
+        if (parseInt(a, 10) > 12 && parseInt(b, 10) <= 12) { month = b; day = a; }
+        return isoDateFromParts(c, month, day);
+      }
+    }
+
+    return null;
+  }
+
+  // Applied at every point a user types into a date-shaped field (table cells, the
+  // inline add-row, the Record Profile, and the Add Contact/New Deal modals) so the
+  // stored value is consistent no matter which of those a rep used.
+  function normalizeDateInput(colName, value) {
+    if (!isDateColumnName(colName)) return value;
+    const parsed = parseLooseDate(value);
+    return parsed === null ? value : parsed;
+  }
+
   // --- TAB SWITCHING ---
   window.switchTab = function(viewName) {
     window.currentView = viewName;
@@ -629,7 +707,7 @@
     const commit = () => {
       if (settled) return;
       settled = true;
-      const newVal = editor.value;
+      const newVal = normalizeDateInput(col.name, editor.value);
       window.currentTableData.rows[rowIndex][colIndex] = newVal; // optimistic
       if (newVal !== original) {
         handleExistingDataChange(rowIndex, col.name, newVal);
@@ -1036,7 +1114,7 @@
       let hasData = false;
 
       inputs.forEach(input => {
-        rowData[input.dataset.col] = input.value;
+        rowData[input.dataset.col] = normalizeDateInput(input.dataset.col, input.value);
         if (input.value.trim() !== '') hasData = true;
       });
 
@@ -1805,7 +1883,7 @@
       .forEach(col => {
         const fieldId = 'dyn-field-' + col.name.replace(/[^a-zA-Z0-9]/g, '_');
         const el = document.getElementById(fieldId);
-        if (el) result[col.name] = el.value;
+        if (el) result[col.name] = normalizeDateInput(col.name, el.value);
       });
     return result;
   }
@@ -2059,7 +2137,7 @@
     const commit = () => {
       if (settled) return;
       settled = true;
-      const newVal = editor.value;
+      const newVal = normalizeDateInput(col.name, editor.value);
       window.currentTableData.rows[rowIndex][colIndex] = newVal;
       renderProfileFieldView(el, rowIndex, colIndex);
       if (newVal !== original) {

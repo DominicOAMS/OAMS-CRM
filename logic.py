@@ -20,6 +20,7 @@ DEAL_STAGES = ["Awaiting Decision", "Proposed Bid", "Closed Won", "Closed Lost"]
 KNOWN_ID_COLUMNS = {
     "Lead ID": "LEAD", "Account ID": "ACC", "Contact ID": "CON",
     "Deal ID": "DEAL", "Visit ID": "VIS", "Attachment ID": "ATT", "Product ID": "PROD",
+    "Line Item ID": "LI",
 }
 DAY_MS = 24 * 60 * 60 * 1000
 
@@ -31,6 +32,7 @@ DEFAULT_HEADERS = {
     "Attachments": ["Attachment ID", "Entity Type", "Entity ID", "File Name", "Mime Type", "Size", "Drive File ID", "Drive File URL", "Uploaded Time"],
     "Visits": ["Visit ID", "Account ID", "Account Name", "Visit Date", "Notes", "Logged Time"],
     "Products": ["Product ID", "Product Name", "SKU", "Unit Price", "Description"],
+    "DealLineItems": ["Line Item ID", "Deal ID", "Product ID", "Product Name", "Quantity", "Unit Price", "Line Total"],
 }
 
 
@@ -578,6 +580,108 @@ def deleteVisit(visitId):
     sheets.delete_row(ws, row_num)
     recomputeAccountVisitStats_(account_id)
     return listVisits(account_id)
+
+
+# ---- Deal Line Items (Products priced onto a Deal) ----
+
+def _recomputeDealAmount(dealId):
+    """Sums this deal's line items (qty * unit price) into its own Amount field - the
+    one place Analytics/Kanban/stale-bid tracking already reads a deal's value from,
+    so none of that code needs to know line items exist. Only ever called right after
+    an add/delete for THIS deal, so it always reflects the current total honestly -
+    including 0 once the last line item is removed, rather than leaving Amount stuck
+    at a stale pre-deletion figure. A deal that has never used line items at all is
+    simply never routed through here, so a manually-typed Amount is left untouched."""
+    items_ws = sheets.get_worksheet("DealLineItems")
+    total = 0.0
+    if items_ws is not None:
+        headers, rows = _read(items_ws)
+        if "Deal ID" in headers and "Line Total" in headers:
+            deal_i = headers.index("Deal ID")
+            total_i = headers.index("Line Total")
+            for r in rows:
+                if deal_i < len(r) and str(r[deal_i]) == str(dealId):
+                    amt = _to_float(r[total_i]) if total_i < len(r) else None
+                    if amt is not None:
+                        total += amt
+    deals_ws = ensureDealsSchema_()
+    row_num = findRowByIdColumn_(deals_ws, "Deal ID", dealId)
+    if row_num == -1:
+        return
+    headers = sheets.header_row(deals_ws)
+    if "Amount" in headers:
+        sheets.update_cell(deals_ws, row_num, headers.index("Amount") + 1, round(total, 2))
+
+
+def listDealLineItems(dealId):
+    ws = sheets.get_worksheet("DealLineItems")
+    if ws is None:
+        return []
+    headers, rows = _read(ws)
+    if not rows or "Deal ID" not in headers:
+        return []
+    idx = {h: i for i, h in enumerate(headers)}
+    results = []
+    for r in rows:
+        if idx["Deal ID"] < len(r) and str(r[idx["Deal ID"]]) == str(dealId):
+            qty = _to_float(r[idx["Quantity"]]) if "Quantity" in idx and idx["Quantity"] < len(r) else None
+            price = _to_float(r[idx["Unit Price"]]) if "Unit Price" in idx and idx["Unit Price"] < len(r) else None
+            total = _to_float(r[idx["Line Total"]]) if "Line Total" in idx and idx["Line Total"] < len(r) else None
+            results.append({
+                "lineItemId": r[idx["Line Item ID"]] if "Line Item ID" in idx else "",
+                "productName": r[idx["Product Name"]] if "Product Name" in idx and idx["Product Name"] < len(r) else "",
+                "quantity": qty or 0,
+                "unitPrice": price or 0,
+                "lineTotal": total or 0,
+            })
+    return results
+
+
+def addDealLineItem(dealId, productId, quantity):
+    products_ws = sheets.get_worksheet("Products")
+    if products_ws is None:
+        raise Exception("Products data isn't available right now - contact your admin.")
+    prod_row = findRowByIdColumn_(products_ws, "Product ID", productId)
+    if prod_row == -1:
+        raise Exception("Product not found: " + str(productId))
+    prod_headers = sheets.header_row(products_ws)
+    product_name = ""
+    if "Product Name" in prod_headers:
+        product_name = products_ws.cell(prod_row, prod_headers.index("Product Name") + 1).value or ""
+    unit_price = 0.0
+    if "Unit Price" in prod_headers:
+        unit_price = _to_float(products_ws.cell(prod_row, prod_headers.index("Unit Price") + 1).value) or 0.0
+
+    qty = _to_float(quantity)
+    if qty is None or qty <= 0:
+        raise Exception("Quantity must be a positive number.")
+
+    getSheetData("DealLineItems")  # self-heals the sheet into existence via DEFAULT_HEADERS
+    addRecordData("DealLineItems", {
+        "Line Item ID": _uid("LI"),
+        "Deal ID": dealId,
+        "Product ID": productId,
+        "Product Name": product_name,
+        "Quantity": qty,
+        "Unit Price": unit_price,
+        "Line Total": round(qty * unit_price, 2),
+    })
+    _recomputeDealAmount(dealId)
+    return listDealLineItems(dealId)
+
+
+def deleteDealLineItem(lineItemId):
+    ws = sheets.get_worksheet("DealLineItems")
+    if ws is None:
+        raise Exception("Deal line items aren't available right now - contact your admin.")
+    row_num = findRowByIdColumn_(ws, "Line Item ID", lineItemId)
+    if row_num == -1:
+        raise Exception("Line item not found: " + str(lineItemId))
+    headers = sheets.header_row(ws)
+    deal_id = ws.cell(row_num, headers.index("Deal ID") + 1).value
+    sheets.delete_row(ws, row_num)
+    _recomputeDealAmount(deal_id)
+    return listDealLineItems(deal_id)
 
 
 # ---- Attachments (Sheets metadata + Drive files) ----

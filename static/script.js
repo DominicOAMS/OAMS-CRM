@@ -1620,6 +1620,7 @@
             <div id="action-menu-deal-${safeDealId}" class="action-menu-content">
               <a href="#" onclick="promptMoveDealToStage(event, '${safeDealId}')">Move to Stage</a>
               <a href="#" onclick="promptEditDeal(event, '${safeDealId}')">Edit Deal</a>
+              <a href="#" onclick="openDealLineItemsModal(event, '${safeDealId}', '${escapeHtml(dealName).replace(/'/g, "\\'")}')">Products</a>
               <a href="#" onclick="openAttachmentsModalForDeal(event, '${safeDealId}')">Attachments</a>
               <a href="#" onclick="promptDeleteDeal(event, '${safeDealId}')" style="color: #d93025; border-top: 1px solid #e1e5eb;">Delete</a>
             </div>
@@ -2030,6 +2031,128 @@
 
     if (!leadId) { Swal.fire('Error', 'Could not determine the Lead ID for this row.', 'error'); return; }
     openAttachmentsModalFor('Lead', leadId, leadLabel);
+  };
+
+  // --- DEAL LINE ITEMS (Products priced onto a Deal) ---
+  let currentLineItemsContext = null; // { dealId, dealName }
+  let lineItemsChanged = false;
+  let lineItemsProductCache = null; // [{id, name, unitPrice}] - fetched once per modal open
+  let currentLineItemsCache = []; // last-rendered items, so a validation error can redraw without re-fetching
+
+  window.openDealLineItemsModal = function(e, dealId, dealName) {
+    e.preventDefault();
+    document.querySelectorAll('.action-menu-content').forEach(el => el.classList.remove('show'));
+
+    currentLineItemsContext = { dealId, dealName };
+    lineItemsChanged = false;
+
+    Swal.fire({ title: 'Loading products...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+    google.script.run
+      .withSuccessHandler(products => {
+        lineItemsProductCache = (products.rows || []).map(r => {
+          const idIdx = products.columns.findIndex(c => c.name === 'Product ID');
+          const nameIdx = products.columns.findIndex(c => c.name === 'Product Name');
+          const priceIdx = products.columns.findIndex(c => c.name === 'Unit Price');
+          return { id: r[idIdx], name: r[nameIdx], unitPrice: parseFloat(r[priceIdx]) || 0 };
+        });
+        google.script.run
+          .withSuccessHandler(items => { Swal.close(); showDealLineItemsModal(items); })
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .listDealLineItems(dealId);
+      })
+      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .getSheetData('Products');
+  };
+
+  function renderLineItemsListHtml(items) {
+    if (!items || items.length === 0) {
+      return '<p class="manage-columns-empty">No products added yet.</p>';
+    }
+    return items.map(it => `
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid #e1e5eb; text-align:left;">
+        <div style="min-width:0;">
+          <div style="font-size:13px; font-weight:700; color:#11141a;">${escapeHtml(it.productName)}</div>
+          <div style="font-size:12px; color:#5c6673;">${it.quantity} × ${formatDealAmount(it.unitPrice)}</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
+          <span style="font-size:13px; font-weight:700;">${formatDealAmount(it.lineTotal)}</span>
+          <button class="btn btn-secondary btn-danger-outline" style="padding:4px 10px; font-size:12px;" onclick="promptDeleteDealLineItem('${escapeHtml(it.lineItemId)}')">Delete</button>
+        </div>
+      </div>`).join('');
+  }
+
+  function showDealLineItemsModal(items) {
+    currentLineItemsCache = items || [];
+    const total = currentLineItemsCache.reduce((sum, it) => sum + (parseFloat(it.lineTotal) || 0), 0);
+    const productOptions = lineItemsProductCache.map(p =>
+      `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} (${formatDealAmount(p.unitPrice)})</option>`
+    ).join('');
+
+    Swal.fire({
+      title: `Products - ${currentLineItemsContext.dealName}`,
+      html: `
+        <div style="max-height:280px; overflow-y:auto; margin-bottom:12px;">${renderLineItemsListHtml(items)}</div>
+        <div style="text-align:right; font-size:14px; font-weight:700; margin-bottom:14px; padding-top:8px; border-top:2px solid #e1e5eb;">
+          Total: ${formatDealAmount(total)}
+        </div>
+        ${lineItemsProductCache.length === 0
+          ? '<p class="manage-columns-empty">No products in the catalog yet - add some from the Products tab first.</p>'
+          : `<div style="display:flex; gap:8px; text-align:left;">
+              <select id="line-item-product" class="swal2-select" style="margin:0; flex:2;">${productOptions}</select>
+              <input id="line-item-qty" type="number" min="1" step="1" value="1" class="swal2-input" style="margin:0; flex:1;" placeholder="Qty">
+              <button class="btn" style="flex-shrink:0;" onclick="submitAddDealLineItem()">Add</button>
+            </div>`
+        }
+      `,
+      showCloseButton: true,
+      showConfirmButton: false,
+      heightAuto: false,
+      scrollbarPadding: false,
+      width: 480
+    }).then(result => {
+      // Same reasoning as the Visits modal - only refresh the board (Amount may have
+      // changed) when the user actually closed the modal after a real change, not
+      // when it was replaced by the delete-confirm popup mid-edit.
+      const userClosed = result.dismiss === Swal.DismissReason.close
+        || result.dismiss === Swal.DismissReason.esc
+        || result.dismiss === Swal.DismissReason.backdrop;
+      if (userClosed && lineItemsChanged) {
+        lineItemsChanged = false;
+        loadDealsBoard();
+      }
+    });
+  }
+
+  window.submitAddDealLineItem = function() {
+    const productId = document.getElementById('line-item-product').value;
+    const qty = parseFloat(document.getElementById('line-item-qty').value);
+    if (!productId || !qty || qty <= 0) {
+      Swal.fire('Error', 'Pick a product and a quantity greater than 0.', 'error').then(() => showDealLineItemsModal(currentLineItemsCache));
+      return;
+    }
+    google.script.run
+      .withSuccessHandler(items => { lineItemsChanged = true; showDealLineItemsModal(items); })
+      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .addDealLineItem(currentLineItemsContext.dealId, productId, qty);
+  };
+
+  window.promptDeleteDealLineItem = function(lineItemId) {
+    Swal.fire({
+      title: 'Remove this product from the deal?',
+      showCancelButton: true,
+      confirmButtonColor: '#d93025',
+      confirmButtonText: 'Remove',
+      heightAuto: false,
+      scrollbarPadding: false
+    }).then(result => {
+      if (result.isConfirmed) {
+        Swal.fire({ title: 'Removing...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+        google.script.run
+          .withSuccessHandler(items => { lineItemsChanged = true; Swal.close(); showDealLineItemsModal(items); })
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .deleteDealLineItem(lineItemId);
+      }
+    });
   };
 
   // Attachments follow a Lead when it's converted to a Deal (the backend re-keys them),

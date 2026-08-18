@@ -98,6 +98,7 @@ _register(logic, [
     "convertLeadToAccount", "addContactToAccount",
     "getDealsBoard", "addNewDeal", "updateDealStage", "updateDealFields", "deleteDealById",
     "logVisit", "listVisits", "deleteVisit",
+    "listDealLineItems", "addDealLineItem", "deleteDealLineItem",
     "listAttachments", "uploadAttachments", "deleteAttachment",
     "getHomeData", "getAnalyticsData",
     "findDuplicateGroups", "mergeRecords",

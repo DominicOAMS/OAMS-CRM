@@ -1621,6 +1621,7 @@
               <a href="#" onclick="promptMoveDealToStage(event, '${safeDealId}')">Move to Stage</a>
               <a href="#" onclick="promptEditDeal(event, '${safeDealId}')">Edit Deal</a>
               <a href="#" onclick="openDealLineItemsModal(event, '${safeDealId}', '${escapeHtml(dealName).replace(/'/g, "\\'")}')">Products</a>
+              <a href="#" onclick="downloadDealQuote(event, '${safeDealId}')">Generate Quote</a>
               <a href="#" onclick="openAttachmentsModalForDeal(event, '${safeDealId}')">Attachments</a>
               <a href="#" onclick="promptDeleteDeal(event, '${safeDealId}')" style="color: #d93025; border-top: 1px solid #e1e5eb;">Delete</a>
             </div>
@@ -1996,6 +1997,12 @@
   document.getElementById('exportBtn').addEventListener('click', () => {
     window.location.href = '/export/' + encodeURIComponent(window.currentView);
   });
+
+  window.downloadDealQuote = function(e, dealId) {
+    e.preventDefault();
+    document.querySelectorAll('.action-menu-content').forEach(el => el.classList.remove('show'));
+    window.location.href = '/quote/' + encodeURIComponent(dealId);
+  };
 
   // --- LEAD ATTACHMENTS ---
   const MAX_ATTACHMENT_MB = 10;

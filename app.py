@@ -8,6 +8,8 @@ OAMS CRM — Python/Flask app backed by a local database (SQLAlchemy) and local 
 `/logo`                serves the local brand logo (falls back to an "O" badge).
 `/files/blob/<id>`     streams a stored attachment (DB blob, login required).
 `/files/doc/<id>`      streams a stored Documents-manager file (DB blob, login required).
+`/export/<sheet>`      downloads a sheet's data as CSV.
+`/quote/<deal_id>`     downloads a Deal as a quote PDF.
 `/webhook`             optional lead intake.
 
 Run locally:  pip install -r requirements.txt  &&  python app.py   (no accounts needed)
@@ -23,6 +25,7 @@ import logic
 import drive
 import sheets
 import users
+import quotes
 from sheets import SessionLocal, Blob, DocNode
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -190,6 +193,19 @@ def export_sheet(sheet_name):
     csv_bytes = output.getvalue().encode("utf-8-sig")
     return Response(csv_bytes, mimetype="text/csv", headers={
         "Content-Disposition": 'attachment; filename="%s.csv"' % sheet_name,
+    })
+
+
+@app.route("/quote/<deal_id>")
+def quote_pdf(deal_id):
+    """Download a Deal as a quote PDF - itemized from its line items if it has any,
+    else a single line using the Deal's own Amount."""
+    try:
+        pdf_bytes = quotes.generate_quote_pdf(deal_id)
+    except Exception:
+        abort(404)
+    return Response(pdf_bytes, mimetype="application/pdf", headers={
+        "Content-Disposition": 'attachment; filename="Quote-%s.pdf"' % deal_id,
     })
 
 

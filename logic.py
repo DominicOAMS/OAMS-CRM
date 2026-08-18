@@ -20,7 +20,7 @@ DEAL_STAGES = ["Awaiting Decision", "Proposed Bid", "Closed Won", "Closed Lost"]
 KNOWN_ID_COLUMNS = {
     "Lead ID": "LEAD", "Account ID": "ACC", "Contact ID": "CON",
     "Deal ID": "DEAL", "Visit ID": "VIS", "Attachment ID": "ATT", "Product ID": "PROD",
-    "Line Item ID": "LI",
+    "Line Item ID": "LI", "Task ID": "TASK",
 }
 DAY_MS = 24 * 60 * 60 * 1000
 
@@ -33,6 +33,7 @@ DEFAULT_HEADERS = {
     "Visits": ["Visit ID", "Account ID", "Account Name", "Visit Date", "Notes", "Logged Time"],
     "Products": ["Product ID", "Product Name", "SKU", "Unit Price", "Description"],
     "DealLineItems": ["Line Item ID", "Deal ID", "Product ID", "Product Name", "Quantity", "Unit Price", "Line Total"],
+    "Tasks": ["Task ID", "Entity Type", "Entity ID", "Entity Label", "Title", "Due Date", "Owner", "Done", "Created Time"],
 }
 
 
@@ -682,6 +683,127 @@ def deleteDealLineItem(lineItemId):
     sheets.delete_row(ws, row_num)
     _recomputeDealAmount(deal_id)
     return listDealLineItems(deal_id)
+
+
+# ---- Tasks (lightweight to-dos linked to any entity - a richer, multi-item
+# complement to the single "Next Follow-up" field Leads/Deals already have, not a
+# replacement for it) ----
+
+def listTasksForEntity(entityType, entityId):
+    ws = sheets.get_worksheet("Tasks")
+    if ws is None:
+        return []
+    headers, rows = _read(ws)
+    if not rows or "Entity Type" not in headers or "Entity ID" not in headers:
+        return []
+    idx = {h: i for i, h in enumerate(headers)}
+    results = []
+    for r in rows:
+        if idx["Entity Type"] < len(r) and str(r[idx["Entity Type"]]) == str(entityType) \
+                and idx["Entity ID"] < len(r) and str(r[idx["Entity ID"]]) == str(entityId):
+            due_ms = _to_ms(r[idx["Due Date"]]) if "Due Date" in idx and idx["Due Date"] < len(r) else None
+            results.append((due_ms, {
+                "taskId": r[idx["Task ID"]] if "Task ID" in idx else "",
+                "title": r[idx["Title"]] if "Title" in idx and idx["Title"] < len(r) else "",
+                "dueDate": r[idx["Due Date"]] if "Due Date" in idx and idx["Due Date"] < len(r) else "",
+                "owner": r[idx["Owner"]] if "Owner" in idx and idx["Owner"] < len(r) else "",
+                "done": _norm(r[idx["Done"]] if "Done" in idx and idx["Done"] < len(r) else "").lower() in ("yes", "true", "1"),
+            }))
+    # Sort by (done, due date), undated tasks last - done server-side, so the sort key
+    # itself (which would need float("inf") for "no due date") never has to travel to
+    # the client, where a bare Infinity token isn't valid JSON and breaks response parsing.
+    results.sort(key=lambda x: (x[1]["done"], x[0] if x[0] is not None else float("inf")))
+    return [r[1] for r in results]
+
+
+def addTask(entityType, entityId, entityLabel, title, dueDate):
+    if entityType not in ATTACHMENT_ENTITY_SHEETS:
+        raise Exception("Invalid entity type: " + str(entityType))
+    if not (title or "").strip():
+        raise Exception("A task title is required.")
+    entity_sheet, id_col = ATTACHMENT_ENTITY_SHEETS[entityType]
+    ews = sheets.get_worksheet(entity_sheet)
+    if ews is None or findRowByIdColumn_(ews, id_col, entityId) == -1:
+        raise Exception("%s not found: %s" % (entityType, entityId))
+
+    _, viewer_rep = _viewer_context()
+
+    getSheetData("Tasks")  # self-heals the sheet into existence via DEFAULT_HEADERS
+    addRecordData("Tasks", {
+        "Task ID": _uid("TASK"),
+        "Entity Type": entityType,
+        "Entity ID": entityId,
+        "Entity Label": entityLabel or "",
+        "Title": title.strip(),
+        "Due Date": dueDate or "",
+        "Owner": viewer_rep,
+        "Done": "No",
+        "Created Time": _now_str(),
+    })
+    return listTasksForEntity(entityType, entityId)
+
+
+def toggleTaskDone(taskId):
+    ws = sheets.get_worksheet("Tasks")
+    if ws is None:
+        raise Exception("Tasks aren't available right now - contact your admin.")
+    row_num = findRowByIdColumn_(ws, "Task ID", taskId)
+    if row_num == -1:
+        raise Exception("Task not found: " + str(taskId))
+    headers = sheets.header_row(ws)
+    current = ws.cell(row_num, headers.index("Done") + 1).value if "Done" in headers else ""
+    is_done = _norm(current).lower() in ("yes", "true", "1")
+    sheets.update_cell(ws, row_num, headers.index("Done") + 1, "No" if is_done else "Yes")
+    entity_type = ws.cell(row_num, headers.index("Entity Type") + 1).value if "Entity Type" in headers else ""
+    entity_id = ws.cell(row_num, headers.index("Entity ID") + 1).value if "Entity ID" in headers else ""
+    return listTasksForEntity(entity_type, entity_id)
+
+
+def deleteTask(taskId):
+    ws = sheets.get_worksheet("Tasks")
+    if ws is None:
+        raise Exception("Tasks aren't available right now - contact your admin.")
+    row_num = findRowByIdColumn_(ws, "Task ID", taskId)
+    if row_num == -1:
+        raise Exception("Task not found: " + str(taskId))
+    headers = sheets.header_row(ws)
+    entity_type = ws.cell(row_num, headers.index("Entity Type") + 1).value if "Entity Type" in headers else ""
+    entity_id = ws.cell(row_num, headers.index("Entity ID") + 1).value if "Entity ID" in headers else ""
+    sheets.delete_row(ws, row_num)
+    return listTasksForEntity(entity_type, entity_id)
+
+
+def listMyTasks():
+    ws = sheets.get_worksheet("Tasks")
+    if ws is None:
+        return []
+    headers, rows = _read(ws)
+    if not rows:
+        return []
+    idx = {h: i for i, h in enumerate(headers)}
+    is_admin, viewer_rep = _viewer_context()
+    results = []
+    for r in rows:
+        owner = r[idx["Owner"]] if "Owner" in idx and idx["Owner"] < len(r) else ""
+        # Same "don't scope" fallback as getSheetData - an admin sees every task, and
+        # so does a non-admin account nobody has assigned a Sales Rep Name to yet.
+        if not is_admin and viewer_rep and _norm(owner).lower() != viewer_rep.lower():
+            continue
+        due_ms = _to_ms(r[idx["Due Date"]]) if "Due Date" in idx and idx["Due Date"] < len(r) else None
+        results.append((due_ms, {
+            "taskId": r[idx["Task ID"]] if "Task ID" in idx else "",
+            "entityType": r[idx["Entity Type"]] if "Entity Type" in idx and idx["Entity Type"] < len(r) else "",
+            "entityId": r[idx["Entity ID"]] if "Entity ID" in idx and idx["Entity ID"] < len(r) else "",
+            "entityLabel": r[idx["Entity Label"]] if "Entity Label" in idx and idx["Entity Label"] < len(r) else "",
+            "title": r[idx["Title"]] if "Title" in idx and idx["Title"] < len(r) else "",
+            "dueDate": r[idx["Due Date"]] if "Due Date" in idx and idx["Due Date"] < len(r) else "",
+            "owner": owner,
+            "done": _norm(r[idx["Done"]] if "Done" in idx and idx["Done"] < len(r) else "").lower() in ("yes", "true", "1"),
+        }))
+    # Same reasoning as listTasksForEntity - keep the float("inf") sort key out of the
+    # JSON payload, since a bare Infinity token isn't valid JSON on the client side.
+    results.sort(key=lambda x: (x[1]["done"], x[0] if x[0] is not None else float("inf")))
+    return [r[1] for r in results]
 
 
 # ---- Attachments (Sheets metadata + Drive files) ----

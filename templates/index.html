@@ -34,6 +34,10 @@
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.5 12 4l8 7.5"/><path d="M6 10v9.5h12V10"/></svg></span>
         <span class="nav-label">Home</span>
       </li>
+      <li id="nav-MyTasks" onclick="switchTab('MyTasks')" title="My Tasks: to-dos you've added on Leads, Contacts, Accounts, or Deals.">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="4.5" width="15" height="15" rx="2"/><path d="m8.5 12 2.3 2.3 4.7-4.6"/></svg></span>
+        <span class="nav-label">My Tasks</span>
+      </li>
       <li id="nav-Leads" onclick="switchTab('Leads')" title="Leads: people or clinics who haven't bought yet - not customers.">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c0-3.4 2.6-5.6 5.5-5.6s5.5 2.2 5.5 5.6"/><path d="M18 8.5v5M15.5 11h5"/></svg></span>
         <span class="nav-label">Leads</span>
@@ -120,6 +124,15 @@
           <div class="chart-card home-card">
             <h3>Upcoming birthdays <span class="home-count" id="home-birthdays-count">0</span></h3>
             <div id="home-birthdays"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="my-tasks-view" id="myTasksView" style="display:none;">
+        <div class="home-grid">
+          <div class="chart-card home-card" style="grid-column: 1 / -1;">
+            <h3>My Tasks <span class="home-count" id="myTasksCount">0</span></h3>
+            <div id="myTasksList"></div>
           </div>
         </div>
       </div>

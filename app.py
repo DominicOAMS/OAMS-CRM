@@ -102,6 +102,7 @@ _register(logic, [
     "getDealsBoard", "addNewDeal", "updateDealStage", "updateDealFields", "deleteDealById",
     "logVisit", "listVisits", "deleteVisit",
     "listDealLineItems", "addDealLineItem", "deleteDealLineItem",
+    "listTasksForEntity", "addTask", "toggleTaskDone", "deleteTask", "listMyTasks",
     "listAttachments", "uploadAttachments", "deleteAttachment",
     "getHomeData", "getAnalyticsData",
     "findDuplicateGroups", "mergeRecords",

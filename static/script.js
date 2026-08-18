@@ -312,6 +312,8 @@
       loadDocuments(null);
     } else if (viewName === 'Users') {
       loadUsers();
+    } else if (viewName === 'MyTasks') {
+      loadMyTasks();
     } else {
       loadData(viewName);
     }
@@ -325,6 +327,7 @@
     document.getElementById('dealsKanbanView').style.display = viewName === 'Deals' ? 'flex' : 'none';
     document.getElementById('analyticsView').style.display = viewName === 'Analytics' ? 'block' : 'none';
     document.getElementById('documentsView').style.display = viewName === 'Documents' ? 'block' : 'none';
+    document.getElementById('myTasksView').style.display = viewName === 'MyTasks' ? 'block' : 'none';
     // usersView only exists in the DOM for admins (the tab's Jinja block is skipped
     // entirely for everyone else), so guard before touching it.
     const usersView = document.getElementById('usersView');
@@ -456,14 +459,17 @@
           if (window.currentView === 'Leads') {
             bodyHtml += `<a href="#" onclick="promptConvertLead(event, ${rowIndex})">Convert Lead</a>`;
             bodyHtml += `<a href="#" onclick="openRecordProfile(event, ${rowIndex})">View Profile</a>`;
+            bodyHtml += `<a href="#" onclick="openTasksModalForRow(event, ${rowIndex})">Tasks</a>`;
           } else if (window.currentView === 'Accounts') {
             bodyHtml += `<a href="#" onclick="promptLogVisit(event, ${rowIndex})">Log Visit</a>`;
             bodyHtml += `<a href="#" onclick="openVisitsModal(event, ${rowIndex})">View Visits</a>`;
             bodyHtml += `<a href="#" onclick="promptAddContact(event, ${rowIndex})">Add Contact</a>`;
             bodyHtml += `<a href="#" onclick="viewContactsForAccount(event, ${rowIndex})">View Contacts</a>`;
             bodyHtml += `<a href="#" onclick="openRecordProfile(event, ${rowIndex})">View Profile</a>`;
+            bodyHtml += `<a href="#" onclick="openTasksModalForRow(event, ${rowIndex})">Tasks</a>`;
           } else if (window.currentView === 'Contacts') {
             bodyHtml += `<a href="#" onclick="openRecordProfile(event, ${rowIndex})">View Profile</a>`;
+            bodyHtml += `<a href="#" onclick="openTasksModalForRow(event, ${rowIndex})">Tasks</a>`;
           }
 
           const needsMenuDivider = (window.currentView === 'Leads' || window.currentView === 'Accounts' || window.currentView === 'Contacts');
@@ -1622,6 +1628,7 @@
               <a href="#" onclick="promptEditDeal(event, '${safeDealId}')">Edit Deal</a>
               <a href="#" onclick="openDealLineItemsModal(event, '${safeDealId}', '${escapeHtml(dealName).replace(/'/g, "\\'")}')">Products</a>
               <a href="#" onclick="downloadDealQuote(event, '${safeDealId}')">Generate Quote</a>
+              <a href="#" onclick="openTasksModal(event, 'Deal', '${safeDealId}', '${escapeHtml(dealName).replace(/'/g, "\\'")}')">Tasks</a>
               <a href="#" onclick="openAttachmentsModalForDeal(event, '${safeDealId}')">Attachments</a>
               <a href="#" onclick="promptDeleteDeal(event, '${safeDealId}')" style="color: #d93025; border-top: 1px solid #e1e5eb;">Delete</a>
             </div>
@@ -2160,6 +2167,220 @@
           .deleteDealLineItem(lineItemId);
       }
     });
+  };
+
+  // --- TASKS (lightweight per-record to-dos, plus a global "My Tasks" list) ---
+  let currentTasksContext = null; // { entityType, entityId, entityLabel }
+  let tasksChanged = false;
+  let currentTasksCache = []; // last-rendered items, so a validation error can redraw without re-fetching
+
+  function openTasksModalCore(entityType, entityId, entityLabel) {
+    currentTasksContext = { entityType, entityId, entityLabel };
+    tasksChanged = false;
+    Swal.fire({ title: 'Loading tasks...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+    google.script.run
+      .withSuccessHandler(tasks => { Swal.close(); showTasksModal(tasks); })
+      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .listTasksForEntity(entityType, entityId);
+  }
+
+  window.openTasksModalForRow = function(e, rowIndex) {
+    e.preventDefault();
+    document.querySelectorAll('.action-menu-content').forEach(el => el.classList.remove('show'));
+    const config = PROFILE_ENTITY_CONFIG[window.currentView];
+    if (!config) return;
+    const rowData = window.currentTableData.rows[rowIndex];
+    const columns = window.currentTableData.columns;
+    const idIdx = columns.findIndex(c => c.name === config.idCol);
+    const entityId = idIdx > -1 ? rowData[idIdx] : null;
+    if (!entityId) { Swal.fire('Error', 'Could not determine the record ID for this row.', 'error'); return; }
+    openTasksModalCore(config.entityType, entityId, config.getTitle(rowData, columns));
+  };
+
+  window.openTasksModal = function(e, entityType, entityId, entityLabel) {
+    e.preventDefault();
+    document.querySelectorAll('.action-menu-content').forEach(el => el.classList.remove('show'));
+    openTasksModalCore(entityType, entityId, entityLabel);
+  };
+
+  function renderTasksListHtml(tasks) {
+    if (!tasks || tasks.length === 0) {
+      return '<p class="manage-columns-empty">No tasks yet.</p>';
+    }
+    const todayIso = new Date().toISOString().slice(0, 10);
+    return tasks.map(t => {
+      const isOverdue = !t.done && t.dueDate && t.dueDate < todayIso;
+      return `
+      <div style="display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid #e1e5eb; text-align:left;">
+        <input type="checkbox" ${t.done ? 'checked' : ''} onchange="submitToggleTaskDone('${escapeHtml(t.taskId)}')" style="flex-shrink:0; width:16px; height:16px; cursor:pointer;">
+        <div style="min-width:0; flex:1;">
+          <div style="font-size:13px; font-weight:700; color:${t.done ? '#a0aabf' : '#11141a'}; ${t.done ? 'text-decoration:line-through;' : ''}">${escapeHtml(t.title)}</div>
+          ${t.dueDate ? `<div style="font-size:12px; color:${isOverdue ? '#d93025' : '#5c6673'};">Due ${escapeHtml(t.dueDate)}</div>` : ''}
+        </div>
+        <button class="btn btn-secondary btn-danger-outline" style="padding:4px 10px; font-size:12px; flex-shrink:0;" onclick="promptDeleteTask('${escapeHtml(t.taskId)}')">Delete</button>
+      </div>`;
+    }).join('');
+  }
+
+  function showTasksModal(tasks) {
+    currentTasksCache = tasks || [];
+    Swal.fire({
+      title: `Tasks - ${currentTasksContext.entityLabel}`,
+      html: `
+        <div style="max-height:320px; overflow-y:auto; margin-bottom:12px;">${renderTasksListHtml(currentTasksCache)}</div>
+        <div style="display:flex; gap:8px; text-align:left;">
+          <input id="task-title" type="text" class="swal2-input" style="margin:0; flex:2;" placeholder="Task title">
+          <input id="task-due" type="date" class="swal2-input" style="margin:0; flex:1;">
+          <button class="btn" style="flex-shrink:0;" onclick="submitAddTask()">Add</button>
+        </div>
+      `,
+      showCloseButton: true,
+      showConfirmButton: false,
+      heightAuto: false,
+      scrollbarPadding: false,
+      width: 480
+    }).then(result => {
+      // Same reasoning as the Deal Line Items modal - only refresh the underlying view
+      // when the user actually closed the modal after a real change, not when it was
+      // replaced by the delete-confirm popup mid-edit.
+      const userClosed = result.dismiss === Swal.DismissReason.close
+        || result.dismiss === Swal.DismissReason.esc
+        || result.dismiss === Swal.DismissReason.backdrop;
+      if (userClosed && tasksChanged) {
+        tasksChanged = false;
+        if (window.currentView === 'Deals') loadDealsBoard();
+      }
+    });
+  }
+
+  window.submitAddTask = function() {
+    const title = document.getElementById('task-title').value;
+    const due = document.getElementById('task-due').value;
+    if (!(title || '').trim()) {
+      Swal.fire('Error', 'A task title is required.', 'error').then(() => showTasksModal(currentTasksCache));
+      return;
+    }
+    google.script.run
+      .withSuccessHandler(tasks => { tasksChanged = true; showTasksModal(tasks); })
+      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .addTask(currentTasksContext.entityType, currentTasksContext.entityId, currentTasksContext.entityLabel, title, due);
+  };
+
+  window.submitToggleTaskDone = function(taskId) {
+    google.script.run
+      .withSuccessHandler(tasks => { tasksChanged = true; showTasksModal(tasks); })
+      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .toggleTaskDone(taskId);
+  };
+
+  window.promptDeleteTask = function(taskId) {
+    Swal.fire({
+      title: 'Delete this task?',
+      showCancelButton: true,
+      confirmButtonColor: '#d93025',
+      confirmButtonText: 'Delete',
+      heightAuto: false,
+      scrollbarPadding: false
+    }).then(result => {
+      if (result.isConfirmed) {
+        Swal.fire({ title: 'Deleting...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+        google.script.run
+          .withSuccessHandler(tasks => { tasksChanged = true; Swal.close(); showTasksModal(tasks); })
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .deleteTask(taskId);
+      }
+    });
+  };
+
+  // --- MY TASKS (a rep's own to-dos across every entity, one flat list) ---
+  function loadMyTasks() {
+    Swal.fire({
+      title: 'Loading tasks...',
+      allowOutsideClick: false,
+      heightAuto: false,
+      scrollbarPadding: false,
+      didOpen: () => { Swal.showLoading(); }
+    });
+    google.script.run
+      .withSuccessHandler(tasks => { Swal.close(); renderMyTasks(tasks); })
+      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .listMyTasks();
+  }
+
+  function renderMyTasks(tasks) {
+    document.getElementById('myTasksCount').textContent = tasks.filter(t => !t.done).length;
+    const list = document.getElementById('myTasksList');
+    if (!tasks || tasks.length === 0) {
+      list.innerHTML = '<p class="home-empty">No tasks yet - add one from the Tasks action on any Lead, Contact, Account, or Deal.</p>';
+      return;
+    }
+    const todayIso = new Date().toISOString().slice(0, 10);
+    list.innerHTML = tasks.map(t => {
+      const isOverdue = !t.done && t.dueDate && t.dueDate < todayIso;
+      return `
+      <div class="home-row">
+        <input type="checkbox" ${t.done ? 'checked' : ''} onclick="submitToggleTaskDoneGlobal('${escapeHtml(t.taskId)}')" style="flex-shrink:0; width:16px; height:16px; cursor:pointer;">
+        <div class="home-row-main home-row-clickable" style="flex:1;" onclick="jumpToTaskEntity('${escapeHtml(t.entityType)}', '${escapeHtml(t.entityId)}')">
+          <span style="${t.done ? 'text-decoration:line-through; color:var(--color-text-faint);' : ''}">${escapeHtml(t.title)}</span>
+          <span class="home-tag">${escapeHtml(t.entityType)}: ${escapeHtml(t.entityLabel || t.entityId)}</span>
+        </div>
+        <span class="home-row-meta ${isOverdue ? 'is-late' : ''}">${t.dueDate ? escapeHtml(t.dueDate) : ''}</span>
+        <button class="btn btn-secondary btn-danger-outline" style="padding:2px 8px; font-size:11px; flex-shrink:0;" onclick="promptDeleteTaskGlobal('${escapeHtml(t.taskId)}')">Delete</button>
+      </div>`;
+    }).join('');
+  }
+
+  window.submitToggleTaskDoneGlobal = function(taskId) {
+    google.script.run
+      .withSuccessHandler(() => loadMyTasks())
+      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .toggleTaskDone(taskId);
+  };
+
+  window.promptDeleteTaskGlobal = function(taskId) {
+    Swal.fire({
+      title: 'Delete this task?',
+      showCancelButton: true,
+      confirmButtonColor: '#d93025',
+      confirmButtonText: 'Delete',
+      heightAuto: false,
+      scrollbarPadding: false
+    }).then(result => {
+      if (result.isConfirmed) {
+        google.script.run
+          .withSuccessHandler(() => loadMyTasks())
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .deleteTask(taskId);
+      }
+    });
+  };
+
+  // Leads/Accounts/Contacts route through the Record Profile modal (no per-card link on
+  // Deals yet, same limitation jumpToFollowUp already has - landing on the board is
+  // still a real improvement over nothing happening).
+  const TASK_ENTITY_VIEW = { Lead: 'Leads', Account: 'Accounts', Contact: 'Contacts' };
+  const TASK_ENTITY_ID_COL = { Lead: 'Lead ID', Account: 'Account ID', Contact: 'Contact ID' };
+
+  window.jumpToTaskEntity = function(entityType, entityId) {
+    if (entityType === 'Deal') {
+      switchTab('Deals');
+      return;
+    }
+    const view = TASK_ENTITY_VIEW[entityType];
+    if (!view) return;
+    pendingTableAction = {
+      view: view,
+      run: (data) => {
+        const idIdx = data.columns.findIndex(c => c.name === TASK_ENTITY_ID_COL[entityType]);
+        const rowIndex = idIdx > -1 ? data.rows.findIndex(r => String(r[idIdx]) === String(entityId)) : -1;
+        if (rowIndex > -1) {
+          renderProfileModal(rowIndex);
+        } else {
+          Swal.fire('Error', 'Could not find that record - it may have been deleted.', 'error');
+        }
+      }
+    };
+    switchTab(view);
   };
 
   // Attachments follow a Lead when it's converted to a Deal (the backend re-keys them),

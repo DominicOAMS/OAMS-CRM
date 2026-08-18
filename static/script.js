@@ -490,33 +490,6 @@
 
     tbody.innerHTML = bodyHtml;
 
-    // "Add new record" row lives in <tfoot>, not <tbody> - pinned there (via CSS) so
-    // it's always reachable without scrolling down through however many rows exist.
-    const tfoot = document.querySelector('.data-table tfoot');
-    let footHtml = '';
-    if (data.columns.length > 0) {
-      footHtml += '<tr>';
-      footHtml += '<td class="sticky-col"></td>';
-      data.columns.forEach(col => {
-        if (HIDE_IDS && isIdColumn(col.name)) return;
-        const idClass = isIdColumn(col.name) ? ' inline-input-id' : '';
-        footHtml += `<td>`;
-        if (col.type === 'dropdown') {
-          footHtml += `<select class="inline-input${idClass} new-lead-input" data-col="${col.name}" onkeydown="handleInlineEnter(event)">`;
-          footHtml += `<option value="" disabled selected>Select ${col.name}...</option>`;
-          col.options.forEach(opt => {
-            footHtml += `<option value="${opt}">${opt}</option>`;
-          });
-          footHtml += `</select>`;
-        } else {
-          footHtml += `<input type="text" class="inline-input${idClass} new-lead-input" data-col="${col.name}" placeholder="Add ${col.name}..." onkeydown="handleInlineEnter(event)">`;
-        }
-        footHtml += `</td>`;
-      });
-      footHtml += '</tr>';
-    }
-    tfoot.innerHTML = footHtml;
-
     document.getElementById('tableFooterCount').innerText = `Total Records: ${matchCount}`;
     syncTableScrollbar();
   }
@@ -1146,46 +1119,6 @@
     google.script.run
       .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
       .updateCellData(window.currentView, rowIndex, colName, newValue);
-  };
-
-  window.handleInlineEnter = function(e) {
-    if (e.key === 'Enter') {
-      const inputs = document.querySelectorAll('.new-lead-input');
-      const rowData = {};
-      let hasData = false;
-
-      inputs.forEach(input => {
-        rowData[input.dataset.col] = normalizeDateInput(input.dataset.col, input.value);
-        if (input.value.trim() !== '') hasData = true;
-      });
-
-      // A Contact saved without an Account link is orphaned - nothing connects it back
-      // to who it's actually for, and there was previously no validation stopping it.
-      if (window.currentView === 'Contacts') {
-        const accountCol = ['Account Name', 'Account'].find(name => name in rowData);
-        if (accountCol && !rowData[accountCol].trim()) {
-          Swal.fire({ title: 'Account is required', text: 'Pick an Account before adding this Contact.', icon: 'warning', heightAuto: false, scrollbarPadding: false });
-          return;
-        }
-      }
-
-      if (hasData) {
-        Swal.fire({ 
-          title: 'Saving Data...', 
-          allowOutsideClick: false, 
-          heightAuto: false,
-          scrollbarPadding: false,
-          didOpen: () => { Swal.showLoading(); } 
-        });
-        google.script.run
-          .withSuccessHandler(data => {
-            Swal.close();
-            renderTable(data);
-          })
-          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
-          .addRecordData(window.currentView, rowData);
-      }
-    }
   };
 
   // --- COLUMN MANAGEMENT W/ DROPDOWN SUPPORT ---
@@ -2009,9 +1942,8 @@
       scrollbarPadding: false,
       preConfirm: () => {
         const values = readDynamicFieldsValues(columns, excludeFields);
-        // Same rule as the inline add-row (handleInlineEnter) - a Contact saved
-        // without an Account link is orphaned, with nothing connecting it back to
-        // who it's actually for.
+        // A Contact saved without an Account link is orphaned, with nothing
+        // connecting it back to who it's actually for.
         if (view === 'Contacts') {
           const accountCol = ['Account Name', 'Account'].find(name => name in values);
           if (accountCol && !values[accountCol].trim()) {

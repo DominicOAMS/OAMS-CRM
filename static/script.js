@@ -667,6 +667,11 @@
         if (opt === original) o.selected = true;
         editor.appendChild(o);
       });
+    } else if (col.type === 'date') {
+      editor = document.createElement('input');
+      editor.type = 'date';
+      editor.className = 'inline-input';
+      editor.value = original;
     } else {
       editor = document.createElement('input');
       editor.type = 'text';
@@ -701,7 +706,7 @@
       if (ev.key === 'Enter') { ev.preventDefault(); editor.blur(); }
       else if (ev.key === 'Escape') { ev.preventDefault(); cancel(); }
     });
-    if (col.type === 'dropdown') {
+    if (col.type === 'dropdown' || col.type === 'date') {
       editor.addEventListener('change', () => editor.blur());
     }
   };
@@ -1165,6 +1170,7 @@
             <select id="swal-new-col-type" class="swal2-select swal-field-select" onchange="toggleNewColOptions(this.value)">
               <option value="text">Text</option>
               <option value="dropdown">Dropdown</option>
+              <option value="date">Date</option>
             </select>
           </div>
           <div class="form-field" id="swal-new-col-opts-wrap" style="display:none;">
@@ -1281,6 +1287,7 @@
           <select id="edit-col-type" class="swal2-select swal-field-select" onchange="document.getElementById('edit-col-opts-wrap').style.display = this.value === 'dropdown' ? 'block' : 'none'">
             <option value="text" ${col.type === 'text' ? 'selected' : ''}>Text</option>
             <option value="dropdown" ${col.type === 'dropdown' ? 'selected' : ''}>Dropdown</option>
+            <option value="date" ${col.type === 'date' ? 'selected' : ''}>Date</option>
           </select>
         </div>
         <div class="form-field" id="edit-col-opts-wrap" style="display: ${col.type === 'dropdown' ? 'block' : 'none'};">
@@ -1843,6 +1850,17 @@
             </select>
           </div>`;
         }
+        if (col.type === 'date') {
+          // A native date picker guarantees YYYY-MM-DD on its own, rather than relying
+          // on the free-text loose-date-parsing that plain "date-shaped-by-name" fields
+          // get (see normalizeDateInput) - a value that doesn't already match that exact
+          // format (e.g. leftover free text from before the column became type:'date')
+          // just shows blank until a new date is picked, same as any date input.
+          return `<div style="text-align:left; margin-bottom:10px;">
+            <label style="font-size:12px; color:#5c6673; display:block; margin-bottom:4px;">${escapeHtml(col.name)}</label>
+            <input id="${fieldId}" type="date" class="swal2-input" style="margin:0; width:100%; box-sizing:border-box;" value="${escapeHtml(currentValue)}">
+          </div>`;
+        }
         return `<div style="text-align:left; margin-bottom:10px;">
           <label style="font-size:12px; color:#5c6673; display:block; margin-bottom:4px;">${escapeHtml(col.name)}</label>
           <input id="${fieldId}" class="swal2-input" style="margin:0; width:100%; box-sizing:border-box;" value="${escapeHtml(currentValue)}">
@@ -2147,6 +2165,11 @@
         if (opt === original) o.selected = true;
         editor.appendChild(o);
       });
+    } else if (col.type === 'date') {
+      editor = document.createElement('input');
+      editor.type = 'date';
+      editor.className = 'profile-field-input';
+      editor.value = original;
     } else {
       editor = document.createElement('input');
       editor.type = 'text';
@@ -2932,6 +2955,16 @@
           <span class="home-row-meta is-late">${b.daysOpen}d open</span>
         </div>`).join('')
       : '<p class="home-empty">No bids sitting too long.</p>';
+
+    const birthdays = d.upcomingBirthdays || { count: 0, items: [] };
+    document.getElementById('home-birthdays-count').innerText = birthdays.count;
+    document.getElementById('home-birthdays').innerHTML = birthdays.items.length
+      ? birthdays.items.map(b => `
+        <div class="home-row home-row-clickable" onclick="jumpToContact('${escapeHtml(b.name).replace(/'/g, "\\'")}')">
+          <div class="home-row-main">${escapeHtml(b.name)}</div>
+          <span class="home-row-meta ${b.daysUntil === 0 ? 'is-late' : ''}">${b.daysUntil === 0 ? 'today' : b.daysUntil === 1 ? 'tomorrow' : 'in ' + b.daysUntil + ' days'} · ${escapeHtml(b.date)}</span>
+        </div>`).join('')
+      : '<p class="home-empty">No birthdays in the next 30 days.</p>';
   }
 
   // Home dashboard rows previously did nothing when tapped - a rep saw "overdue for a
@@ -2944,6 +2977,11 @@
     }
     pendingTableSearch = { view: 'Leads', query: name };
     switchTab('Leads');
+  };
+
+  window.jumpToContact = function(name) {
+    pendingTableSearch = { view: 'Contacts', query: name };
+    switchTab('Contacts');
   };
 
   window.jumpToAccountVisit = function(accountName) {

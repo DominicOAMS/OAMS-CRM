@@ -59,6 +59,23 @@ def _to_ms(v):
         return None
 
 
+def _next_birthday(dob_ms, today):
+    """Days until the next occurrence of a stored birth date's month/day, plus that
+    date itself - the birth YEAR only matters for parsing, recurrence is annual."""
+    dob = datetime.fromtimestamp(dob_ms / 1000)
+
+    def _in_year(year):
+        try:
+            return datetime(year, dob.month, dob.day)
+        except ValueError:
+            return datetime(year, 2, 28)  # Feb 29 on a non-leap year
+
+    next_bday = _in_year(today.year)
+    if next_bday.date() < today.date():
+        next_bday = _in_year(today.year + 1)
+    return (next_bday.date() - today.date()).days, next_bday
+
+
 def _to_float(v):
     if v is None:
         return None
@@ -219,6 +236,7 @@ def getSheetData(sheetName):
     data_rows = vals[1:]
 
     validations = sheets.get_row2_validations(sheetName, last_col)
+    stored_types = sheets.get_column_types(sheetName, last_col)
 
     # Dynamic Account dropdown options (plain names). Looked up by column NAME, not a
     # hardcoded position - "Account Name" sits at a different index on data imported
@@ -250,6 +268,8 @@ def getSheetData(sheetName):
             columns.append({"name": colName, "type": "dropdown", "options": acc_options})
         elif validations[i]:
             columns.append({"name": colName, "type": "dropdown", "options": validations[i]["options"]})
+        elif stored_types[i] == "date":
+            columns.append({"name": colName, "type": "date", "options": []})
         else:
             columns.append({"name": colName, "type": "text", "options": []})
 
@@ -734,20 +754,18 @@ def syncColumns(sheetName, columnsState):
                     new_row.append("")
             new_data.append(new_row)
 
-    sheets.set_all(ws, new_headers, new_data[1:])
-    try:
-        sheets.clear_all_validations(ws)
-    except Exception:
-        pass
-
-    num_rows = max(ws.row_count - 1, 1)
-    for idx, col in enumerate(columnsState):
+    # Account/Account ID on Contacts & Deals get their dropdown options computed live
+    # from the Accounts sheet on every getSheetData call (see acc_options above) -
+    # persisting whatever dropdown/options state Manage Columns happened to show at
+    # save time would just go stale the moment an Account gets renamed or added.
+    col_defs = []
+    for col in columnsState:
         is_dynamic_account = (sheetName in ("Contacts", "Deals") and col.get("newName") in ("Account", "Account ID"))
-        if col.get("type") == "dropdown" and col.get("options") and not is_dynamic_account:
-            try:
-                sheets.apply_list_validation(ws, idx, col["options"], 2, num_rows, False)
-            except Exception:
-                pass
+        col_type = "text" if is_dynamic_account else (col.get("type") or "text")
+        options = col.get("options") or [] if col_type == "dropdown" else []
+        col_defs.append({"name": col["newName"], "type": col_type, "options": options})
+
+    sheets.set_all(ws, col_defs, new_data[1:])
     return getSheetData(sheetName)
 
 
@@ -967,12 +985,39 @@ def getHomeData():
     # account with even one old visit.
     overdue_visits.sort(key=lambda x: x["daysSince"] if x["daysSince"] is not None else float("inf"), reverse=True)
 
+    upcoming_birthdays = []
+    contacts_ws = sheets.get_worksheet("Contacts")
+    if contacts_ws is not None:
+        headers, rows = _read(contacts_ws)
+        c = {h: i for i, h in enumerate(headers)}
+        if "Date of Birth" in c:
+            for row in rows:
+                dob_raw = row[c["Date of Birth"]] if c["Date of Birth"] < len(row) else None
+                dob_ms = _to_ms(dob_raw)
+                if dob_ms is None:
+                    continue
+                days_until, next_bday = _next_birthday(dob_ms, today)
+                if days_until > 30:
+                    continue
+                first = row[c["First Name"]] if "First Name" in c and c["First Name"] < len(row) else ""
+                last = row[c["Last Name"]] if "Last Name" in c and c["Last Name"] < len(row) else ""
+                nm = (str(first or "") + " " + str(last or "")).strip()
+                if not nm:
+                    nm = (row[c["Name"]] if "Name" in c and c["Name"] < len(row) else "") or "Contact"
+                upcoming_birthdays.append({
+                    "name": nm,
+                    "date": next_bday.strftime("%Y-%m-%d"),
+                    "daysUntil": days_until,
+                })
+    upcoming_birthdays.sort(key=lambda x: x["daysUntil"])
+
     return {
         "pastWeek": {"leads": leads_past_week, "visits": visits_past_week,
                      "dealsWon": deals_won_past_week, "wonValue": won_value_past_week},
         "followUps": {"count": len(follow_ups), "items": follow_ups[:25]},
         "overdueVisits": {"count": len(overdue_visits), "items": overdue_visits[:25]},
         "staleBids": {"count": len(stale_bids), "items": stale_bids[:25]},
+        "upcomingBirthdays": {"count": len(upcoming_birthdays), "items": upcoming_birthdays[:25]},
     }
 
 

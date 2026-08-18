@@ -330,13 +330,19 @@ def set_row(ws, row1, values):
 
 
 def set_all(ws, headers, rows):
-    """Replace the whole sheet: columns := headers (as text), rows := given rows."""
+    """Replace the whole sheet: columns := headers, rows := given rows. Each item in
+    `headers` is either a plain name (stored as a plain 'text' column - what a fresh
+    import provides) or a {name, type, options} dict, letting a caller that already
+    knows a column's chosen type (syncColumns) persist it instead of every column
+    reverting to 'text'."""
     name = ws.name
-    _set_columns(name, [{"name": h, "type": "text", "options": []} for h in headers])
+    col_defs = [h if isinstance(h, dict) else {"name": h, "type": "text", "options": []} for h in headers]
+    names = [c["name"] for c in col_defs]
+    _set_columns(name, col_defs)
     with SessionLocal() as s:
         s.query(RowRec).filter(RowRec.sheet_name == name).delete()
         for row in rows:
-            data = {h: (row[i] if i < len(row) else "") for i, h in enumerate(headers)}
+            data = {names[i]: (row[i] if i < len(row) else "") for i in range(len(names))}
             s.add(RowRec(sheet_name=name, data=data))
         s.commit()
 
@@ -349,6 +355,19 @@ def get_row2_validations(name, num_cols):
     for i, c in enumerate(cols[:num_cols]):
         if c.get("type") == "dropdown":
             result[i] = {"options": c.get("options") or []}
+    return result
+
+
+# Positional (not name-keyed) on purpose, same reasoning as get_row2_validations above -
+# a stored column name can carry stray whitespace that the caller's already-stripped
+# display headers won't match exactly.
+def get_column_types(name, num_cols):
+    cols = _col_defs(name)
+    result = ["text"] * num_cols
+    for i, c in enumerate(cols[:num_cols]):
+        t = c.get("type")
+        if t:
+            result[i] = t
     return result
 
 

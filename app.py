@@ -170,7 +170,7 @@ def files_doc(node_id):
                          headers={"Content-Disposition": 'inline; filename="%s"' % (n.name or "file")})
 
 
-_EXPORTABLE_SHEETS = {"Leads", "Contacts", "Accounts", "Deals"}
+_EXPORTABLE_SHEETS = {"Leads", "Contacts", "Accounts", "Deals", "Products"}
 
 
 @app.route("/export/<sheet_name>")

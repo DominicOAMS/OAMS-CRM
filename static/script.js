@@ -318,7 +318,7 @@
   };
 
   function showViewContainer(viewName) {
-    const isTableView = (viewName === 'Leads' || viewName === 'Contacts' || viewName === 'Accounts');
+    const isTableView = (viewName === 'Leads' || viewName === 'Contacts' || viewName === 'Accounts' || viewName === 'Products');
 
     document.querySelector('.data-table').style.display = isTableView ? '' : 'none';
     document.getElementById('homeView').style.display = viewName === 'Home' ? 'block' : 'none';
@@ -1833,7 +1833,7 @@
       .map(col => {
         const fieldId = 'dyn-field-' + col.name.replace(/[^a-zA-Z0-9]/g, '_');
         const currentValue = valuesByName[col.name] || '';
-        if (col.name === 'Amount') {
+        if (col.name === 'Amount' || col.name === 'Unit Price') {
           // Same number/peso treatment promptBidAmount already gives Amount at the
           // Proposed Bid stage - giving it here too means "50k" can't get typed in at
           // deal creation and silently misparsed later by parseAmountValue's regex.
@@ -1939,12 +1939,13 @@
   // "+ New" button beside Import Data - a modal form alternative to typing straight
   // into the sticky add-row at the bottom of the table (which is easy to miss on a
   // long table, and requires scrolling all the way down first).
-  const NEW_RECORD_LABEL = { Leads: 'Lead', Contacts: 'Contact', Accounts: 'Account' };
+  const NEW_RECORD_LABEL = { Leads: 'Lead', Contacts: 'Contact', Accounts: 'Account', Products: 'Product' };
   const NEW_RECORD_SYSTEM_FIELDS = {
     Leads: ['Lead ID'],
     Contacts: ['Contact ID'],
     // Last Visit/Visit Count are maintained by the Log Visit feature, not entered by hand.
     Accounts: ['Account ID', 'Last Visit', 'Visit Count', 'Created Time'],
+    Products: ['Product ID'],
   };
 
   document.getElementById('newRecordBtn').addEventListener('click', () => {

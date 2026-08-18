@@ -19,7 +19,7 @@ import drive
 DEAL_STAGES = ["Awaiting Decision", "Proposed Bid", "Closed Won", "Closed Lost"]
 KNOWN_ID_COLUMNS = {
     "Lead ID": "LEAD", "Account ID": "ACC", "Contact ID": "CON",
-    "Deal ID": "DEAL", "Visit ID": "VIS", "Attachment ID": "ATT",
+    "Deal ID": "DEAL", "Visit ID": "VIS", "Attachment ID": "ATT", "Product ID": "PROD",
 }
 DAY_MS = 24 * 60 * 60 * 1000
 
@@ -30,6 +30,7 @@ DEFAULT_HEADERS = {
     "Deals": ["Deal ID", "Deal Name", "Account", "Amount", "Stage", "Sales Rep", "Territory", "Next Follow-up", "Created Time", "Closed Date", "Lost Reason"],
     "Attachments": ["Attachment ID", "Entity Type", "Entity ID", "File Name", "Mime Type", "Size", "Drive File ID", "Drive File URL", "Uploaded Time"],
     "Visits": ["Visit ID", "Account ID", "Account Name", "Visit Date", "Notes", "Logged Time"],
+    "Products": ["Product ID", "Product Name", "SKU", "Unit Price", "Description"],
 }
 
 

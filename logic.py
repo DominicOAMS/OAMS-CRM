@@ -1310,6 +1310,106 @@ def getHomeData():
     }
 
 
+# ---- Calendar (Lead/Deal follow-ups, logged Visits, Task due dates - one flat list,
+# the client buckets by day and paginates by month) ----
+
+def getCalendarEvents():
+    is_admin, viewer_rep = _viewer_context()
+    scoped = (not is_admin) and bool(viewer_rep)
+    events = []
+
+    def fmt(ms):
+        return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
+
+    ensureLeadsFollowUp_()
+    leads_ws = sheets.get_worksheet("Leads")
+    if leads_ws is not None:
+        headers, rows = _read(leads_ws)
+        c = {h: i for i, h in enumerate(headers)}
+        rep_i = c.get("Sales Rep")
+        for row in rows:
+            if not _owned_by_viewer(row, rep_i, scoped, viewer_rep):
+                continue
+            fu = _to_ms(row[c["Next Follow-up"]]) if "Next Follow-up" in c and c["Next Follow-up"] < len(row) else None
+            if fu is None:
+                continue
+            nm = (row[c["Name"]] if "Name" in c and row[c["Name"]] else (row[c["Company"]] if "Company" in c else "")) or "Lead"
+            lead_id = row[c["Lead ID"]] if "Lead ID" in c and c["Lead ID"] < len(row) else None
+            events.append({"date": fmt(fu), "kind": "Lead Follow-up", "title": nm,
+                           "entityType": "Lead", "entityId": lead_id, "done": False})
+
+    ensureDealsSchema_()
+    deals_ws = sheets.get_worksheet("Deals")
+    if deals_ws is not None:
+        headers, rows = _read(deals_ws)
+        c = {h: i for i, h in enumerate(headers)}
+        rep_i = c.get("Sales Rep")
+        for row in rows:
+            if not _owned_by_viewer(row, rep_i, scoped, viewer_rep):
+                continue
+            fu = _to_ms(row[c["Next Follow-up"]]) if "Next Follow-up" in c and c["Next Follow-up"] < len(row) else None
+            if fu is None:
+                continue
+            nm = (row[c["Deal Name"]] if "Deal Name" in c and row[c["Deal Name"]] else "") or "Deal"
+            deal_id = row[c["Deal ID"]] if "Deal ID" in c and c["Deal ID"] < len(row) else None
+            events.append({"date": fmt(fu), "kind": "Deal Follow-up", "title": nm,
+                           "entityType": "Deal", "entityId": deal_id, "done": False})
+
+    # Visits are scoped by the Account they were logged against (a Visit carries no
+    # Sales Rep of its own) - same ownership lookup getHomeData already builds.
+    ensureAccountsVisitColumns_()
+    acc_ws = sheets.get_worksheet("Accounts")
+    acc_headers, acc_rows = _read(acc_ws) if acc_ws is not None else ([], [])
+    acc_c = {h: i for i, h in enumerate(acc_headers)}
+    acc_rep_i = acc_c.get("Sales Rep")
+    owned_account_ids = None
+    if scoped:
+        aid_i = acc_c.get("Account ID")
+        owned_account_ids = set()
+        if aid_i is not None:
+            for row in acc_rows:
+                if _owned_by_viewer(row, acc_rep_i, scoped, viewer_rep):
+                    aid = row[aid_i] if aid_i < len(row) else None
+                    if aid:
+                        owned_account_ids.add(aid)
+
+    visits_ws = sheets.get_worksheet("Visits")
+    if visits_ws is not None:
+        headers, rows = _read(visits_ws)
+        c = {h: i for i, h in enumerate(headers)}
+        for row in rows:
+            acc = row[c["Account ID"]] if "Account ID" in c and c["Account ID"] < len(row) else None
+            if owned_account_ids is not None and acc not in owned_account_ids:
+                continue
+            ms = _to_ms(row[c["Visit Date"]]) if "Visit Date" in c and c["Visit Date"] < len(row) else None
+            if ms is None:
+                continue
+            nm = row[c["Account Name"]] if "Account Name" in c and c["Account Name"] < len(row) else "Visit"
+            events.append({"date": fmt(ms), "kind": "Visit", "title": nm,
+                           "entityType": "Account", "entityId": acc, "done": True})
+
+    tasks_ws = sheets.get_worksheet("Tasks")
+    if tasks_ws is not None:
+        headers, rows = _read(tasks_ws)
+        c = {h: i for i, h in enumerate(headers)}
+        for row in rows:
+            owner = row[c["Owner"]] if "Owner" in c and c["Owner"] < len(row) else ""
+            if not is_admin and viewer_rep and _norm(owner).lower() != viewer_rep.lower():
+                continue
+            due_ms = _to_ms(row[c["Due Date"]]) if "Due Date" in c and c["Due Date"] < len(row) else None
+            if due_ms is None:
+                continue
+            title = row[c["Title"]] if "Title" in c and c["Title"] < len(row) else "Task"
+            entity_type = row[c["Entity Type"]] if "Entity Type" in c and c["Entity Type"] < len(row) else ""
+            entity_id = row[c["Entity ID"]] if "Entity ID" in c and c["Entity ID"] < len(row) else ""
+            done = _norm(row[c["Done"]] if "Done" in c and c["Done"] < len(row) else "").lower() in ("yes", "true", "1")
+            events.append({"date": fmt(due_ms), "kind": "Task", "title": title,
+                           "entityType": entity_type, "entityId": entity_id, "done": done})
+
+    events.sort(key=lambda e: e["date"])
+    return events
+
+
 # ---- Duplicate detect & merge ----
 
 def findDuplicateGroups(sheetName, keyColumn):

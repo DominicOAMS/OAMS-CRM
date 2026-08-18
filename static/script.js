@@ -314,6 +314,8 @@
       loadUsers();
     } else if (viewName === 'MyTasks') {
       loadMyTasks();
+    } else if (viewName === 'Calendar') {
+      loadCalendar();
     } else {
       loadData(viewName);
     }
@@ -328,6 +330,7 @@
     document.getElementById('analyticsView').style.display = viewName === 'Analytics' ? 'block' : 'none';
     document.getElementById('documentsView').style.display = viewName === 'Documents' ? 'block' : 'none';
     document.getElementById('myTasksView').style.display = viewName === 'MyTasks' ? 'block' : 'none';
+    document.getElementById('calendarView').style.display = viewName === 'Calendar' ? 'block' : 'none';
     // usersView only exists in the DOM for admins (the tab's Jinja block is skipped
     // entirely for everyone else), so guard before touching it.
     const usersView = document.getElementById('usersView');
@@ -2381,6 +2384,129 @@
       }
     };
     switchTab(view);
+  };
+
+  // --- CALENDAR (Lead/Deal follow-ups, logged Visits, and Task due dates by day) ---
+  let calendarViewYear = null;
+  let calendarViewMonth = null; // 0-based
+  let calendarEventsCache = [];
+
+  function loadCalendar() {
+    const today = new Date();
+    if (calendarViewYear === null) {
+      calendarViewYear = today.getFullYear();
+      calendarViewMonth = today.getMonth();
+    }
+    Swal.fire({ title: 'Loading calendar...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+    google.script.run
+      .withSuccessHandler(events => { Swal.close(); calendarEventsCache = events || []; renderCalendarGrid(); })
+      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .getCalendarEvents();
+  }
+
+  window.calendarShift = function(delta) {
+    calendarViewMonth += delta;
+    if (calendarViewMonth < 0) { calendarViewMonth = 11; calendarViewYear--; }
+    else if (calendarViewMonth > 11) { calendarViewMonth = 0; calendarViewYear++; }
+    renderCalendarGrid();
+  };
+
+  window.calendarGoToday = function() {
+    const today = new Date();
+    calendarViewYear = today.getFullYear();
+    calendarViewMonth = today.getMonth();
+    renderCalendarGrid();
+  };
+
+  function calendarIsOverdueTask(e) {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    return e.kind === 'Task' && !e.done && e.date < todayIso;
+  }
+
+  function calendarKindClass(e) {
+    if (e.kind === 'Lead Follow-up') return 'calendar-event-lead';
+    if (e.kind === 'Deal Follow-up') return 'calendar-event-deal';
+    if (e.kind === 'Visit') return 'calendar-event-visit';
+    return 'calendar-event-task' + (calendarIsOverdueTask(e) ? ' calendar-event-overdue' : '');
+  }
+
+  function calendarDotClass(e) {
+    if (e.kind === 'Lead Follow-up') return 'calendar-dot-lead';
+    if (e.kind === 'Deal Follow-up') return 'calendar-dot-deal';
+    if (e.kind === 'Visit') return 'calendar-dot-visit';
+    return 'calendar-dot-task';
+  }
+
+  const MONTH_LABELS = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+
+  function renderCalendarGrid() {
+    const year = calendarViewYear, month = calendarViewMonth;
+    document.getElementById('calendarTitle').textContent = MONTH_LABELS[month] + ' ' + year;
+
+    const startWeekday = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const daysInPrevMonth = new Date(year, month, 0).getDate();
+    const todayIso = new Date().toISOString().slice(0, 10);
+
+    const eventsByDate = {};
+    calendarEventsCache.forEach(e => { (eventsByDate[e.date] = eventsByDate[e.date] || []).push(e); });
+
+    const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    let html = weekdayLabels.map(d => `<div class="calendar-weekday">${d}</div>`).join('');
+
+    const totalCells = Math.ceil((startWeekday + daysInMonth) / 7) * 7;
+    for (let i = 0; i < totalCells; i++) {
+      const dayNum = i - startWeekday + 1;
+      let cellYear = year, cellMonth = month, cellDay, outside = false;
+      if (dayNum < 1) {
+        cellDay = daysInPrevMonth + dayNum;
+        cellMonth = month - 1;
+        if (cellMonth < 0) { cellMonth = 11; cellYear--; }
+        outside = true;
+      } else if (dayNum > daysInMonth) {
+        cellDay = dayNum - daysInMonth;
+        cellMonth = month + 1;
+        if (cellMonth > 11) { cellMonth = 0; cellYear++; }
+        outside = true;
+      } else {
+        cellDay = dayNum;
+      }
+      const iso = cellYear + '-' + String(cellMonth + 1).padStart(2, '0') + '-' + String(cellDay).padStart(2, '0');
+      const dayEvents = eventsByDate[iso] || [];
+      const shown = dayEvents.slice(0, 3);
+      const more = dayEvents.length - shown.length;
+      html += `
+        <div class="calendar-day${outside ? ' calendar-day-outside' : ''}${iso === todayIso ? ' calendar-day-today' : ''}" onclick="showCalendarDay('${iso}')">
+          <div class="calendar-day-num">${cellDay}</div>
+          <div class="calendar-day-events">
+            ${shown.map(e => `<div class="calendar-event ${calendarKindClass(e)}" title="${escapeHtml(e.title)}">${escapeHtml(e.title)}</div>`).join('')}
+            ${more > 0 ? `<div class="calendar-more">+${more} more</div>` : ''}
+          </div>
+        </div>`;
+    }
+    document.getElementById('calendarGrid').innerHTML = html;
+  }
+
+  window.showCalendarDay = function(dateStr) {
+    const events = calendarEventsCache.filter(e => e.date === dateStr);
+    const label = new Date(dateStr + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const html = events.length === 0
+      ? '<p class="manage-columns-empty">Nothing on this day.</p>'
+      : events.map(e => `
+        <div class="home-row home-row-clickable" onclick="Swal.close(); jumpToTaskEntity('${escapeHtml(e.entityType)}', '${escapeHtml(e.entityId)}')">
+          <div class="home-row-main"><span class="calendar-dot ${calendarDotClass(e)}"></span>${escapeHtml(e.title)}</div>
+          <span class="home-tag">${escapeHtml(e.kind)}</span>
+        </div>`).join('');
+    Swal.fire({
+      title: label,
+      html: `<div style="max-height:360px; overflow-y:auto; text-align:left;">${html}</div>`,
+      showConfirmButton: false,
+      showCloseButton: true,
+      heightAuto: false,
+      scrollbarPadding: false,
+      width: 460
+    });
   };
 
   // Attachments follow a Lead when it's converted to a Deal (the backend re-keys them),

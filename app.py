@@ -104,7 +104,7 @@ _register(logic, [
     "listDealLineItems", "addDealLineItem", "deleteDealLineItem",
     "listTasksForEntity", "addTask", "toggleTaskDone", "deleteTask", "listMyTasks",
     "listAttachments", "uploadAttachments", "deleteAttachment",
-    "getHomeData", "getAnalyticsData",
+    "getHomeData", "getAnalyticsData", "getCalendarEvents",
     "findDuplicateGroups", "mergeRecords",
 ])
 _register(drive, [

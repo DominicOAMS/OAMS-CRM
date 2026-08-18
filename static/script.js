@@ -342,6 +342,9 @@
     const newRecordBtn = document.getElementById('newRecordBtn');
     newRecordBtn.style.display = isTableView ? 'inline-block' : 'none';
     if (isTableView) newRecordBtn.textContent = '+ New ' + NEW_RECORD_LABEL[viewName];
+    // Export covers Deals too (unlike Import/New/Manage Columns) - it has no table UI
+    // of its own, but its data is exactly as exportable as any spreadsheet-backed tab.
+    document.getElementById('exportBtn').style.display = (isTableView || viewName === 'Deals') ? 'inline-block' : 'none';
     document.getElementById('tableToolbar').style.display = isTableView ? 'flex' : 'none';
     document.getElementById('tableFooter').style.display = isTableView ? 'flex' : 'none';
     document.getElementById('kanbanToolbar').style.display = viewName === 'Deals' ? 'flex' : 'none';
@@ -1984,6 +1987,12 @@
           .addRecordData(view, result.value);
       }
     });
+  });
+
+  // Plain navigation (not fetch) - the browser handles the file download and
+  // Content-Disposition itself, no JS-side blob/save-dialog plumbing needed.
+  document.getElementById('exportBtn').addEventListener('click', () => {
+    window.location.href = '/export/' + encodeURIComponent(window.currentView);
   });
 
   // --- LEAD ATTACHMENTS ---

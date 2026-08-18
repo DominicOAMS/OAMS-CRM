@@ -13,6 +13,8 @@ OAMS CRM — Python/Flask app backed by a local database (SQLAlchemy) and local 
 Run locally:  pip install -r requirements.txt  &&  python app.py   (no accounts needed)
 """
 
+import csv
+import io
 import traceback
 from flask import Flask, request, jsonify, render_template, Response, abort, session, redirect, url_for
 
@@ -160,6 +162,28 @@ def files_doc(node_id):
             abort(404)
         return Response(n.data, mimetype=n.mime_type or "application/octet-stream",
                          headers={"Content-Disposition": 'inline; filename="%s"' % (n.name or "file")})
+
+
+_EXPORTABLE_SHEETS = {"Leads", "Contacts", "Accounts", "Deals"}
+
+
+@app.route("/export/<sheet_name>")
+def export_sheet(sheet_name):
+    """Download a sheet's current data as CSV - the read-side counterpart to Import
+    Data, so a rep can pull their data back out for a backup or offline review."""
+    if sheet_name not in _EXPORTABLE_SHEETS:
+        abort(404)
+    data = logic.getSheetData(sheet_name)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([c["name"] for c in data["columns"]])
+    writer.writerows(data["rows"])
+    # utf-8-sig (BOM) so Excel opens accented/peso-sign characters correctly instead
+    # of guessing the wrong encoding, which plain utf-8 leaves it prone to on Windows.
+    csv_bytes = output.getvalue().encode("utf-8-sig")
+    return Response(csv_bytes, mimetype="text/csv", headers={
+        "Content-Disposition": 'attachment; filename="%s.csv"' % sheet_name,
+    })
 
 
 @app.route("/health")

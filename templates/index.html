@@ -214,7 +214,7 @@
         <div class="table-scroll">
           <table class="data-table">
             <thead>
-              <tr><th>Username</th><th>Email</th><th>Role</th><th></th></tr>
+              <tr><th>Username</th><th>Email</th><th>Sales Rep Name</th><th>Role</th><th></th></tr>
             </thead>
             <tbody id="usersTableBody"></tbody>
           </table>
@@ -312,6 +312,12 @@
     </div>
   </div>
 
+  <script>
+    // Server-rendered, not user-settable - used purely to lock the Analytics/Kanban
+    // rep filter to "just me" for a non-admin (the actual restriction is enforced
+    // server-side in getAnalyticsData/getSheetData regardless of this flag).
+    window.isAdmin = {{ is_admin|tojson }};
+  </script>
   <script src="/static/script.js"></script>
 </body>
 </html>

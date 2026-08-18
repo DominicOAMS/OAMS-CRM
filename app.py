@@ -63,6 +63,12 @@ def login():
             session["user_id"] = user["id"]
             session["username"] = user["username"]
             session["is_admin"] = user["isAdmin"]
+            # Left blank (not falling back to the login username) when no Sales Rep
+            # Name is configured - logic.py treats a blank rep name as "don't scope",
+            # so a newly created account an admin hasn't configured yet sees everything
+            # rather than silently seeing nothing because its username matches no
+            # "Sales Rep" value in the data.
+            session["sales_rep_name"] = user["salesRepName"] or ""
             session.permanent = True
             return redirect(url_for("index"))
         error = "Invalid username or password."
@@ -99,11 +105,11 @@ _register(logic, [
 _register(drive, [
     "getDocuments", "createDocFolder", "uploadDocuments", "renameDocItem", "deleteDocItem",
 ])
-_register(users, ["listUsers", "addUser", "deleteUser", "updateUserPassword"])
+_register(users, ["listUsers", "addUser", "deleteUser", "updateUserPassword", "updateUserSalesRepName"])
 
 # These manage OTHER people's accounts, so - unlike everything else behind the login
 # gate - they additionally require the current session to be an admin.
-_ADMIN_ONLY_RPC = {"listUsers", "addUser", "deleteUser", "updateUserPassword"}
+_ADMIN_ONLY_RPC = {"listUsers", "addUser", "deleteUser", "updateUserPassword", "updateUserSalesRepName"}
 
 
 @app.route("/")

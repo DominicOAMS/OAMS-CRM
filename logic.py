@@ -59,6 +59,26 @@ def _to_ms(v):
         return None
 
 
+def _viewer_context():
+    """(is_admin, rep_name) for the currently logged-in session. Reads Flask's session
+    directly rather than threading a parameter through every function's signature -
+    every function here always runs inside a request via the /api/rpc dispatcher, so
+    this is a pragmatic shortcut for a single-Flask-app codebase, not a reusable
+    library concern. Imported locally so this module has no hard Flask dependency for
+    the (rare) code path that isn't request-scoped."""
+    from flask import session
+    return bool(session.get("is_admin")), (session.get("sales_rep_name") or "").strip()
+
+
+def _owned_by_viewer(row, rep_col_index, scoped, viewer_rep):
+    """True unless per-rep scoping is active, the row has a Sales Rep column to check,
+    and that column's value doesn't match the viewer's own name."""
+    if not scoped or rep_col_index is None:
+        return True
+    val = row[rep_col_index] if rep_col_index < len(row) else ""
+    return _norm(val).lower() == viewer_rep.lower()
+
+
 def _next_birthday(dob_ms, today):
     """Days until the next occurrence of a stored birth date's month/day, plus that
     date itself - the birth YEAR only matters for parsing, recurrence is annual."""
@@ -283,6 +303,15 @@ def getSheetData(sheetName):
         for r in rows:
             if r[aci]:
                 r[aci] = _strip_link(r[aci])
+
+    # Non-admins only see rows attributed to their own name in "Sales Rep" - applies
+    # automatically to whichever sheet actually has that column (Leads/Contacts/
+    # Accounts/Deals today), and to nothing else (e.g. Visits, Attachments, Users,
+    # any custom sheet without it), since there's no ownership signal to check there.
+    is_admin, viewer_rep = _viewer_context()
+    if not is_admin and viewer_rep and "Sales Rep" in header_values:
+        rep_i = header_values.index("Sales Rep")
+        rows = [r for r in rows if _owned_by_viewer(r, rep_i, True, viewer_rep)]
 
     return {"columns": columns, "rows": rows}
 
@@ -885,6 +914,12 @@ def getHomeData():
     today_end = int(datetime(today.year, today.month, today.day).timestamp() * 1000) + DAY_MS - 1
     week_ago = now_ms - 7 * DAY_MS
 
+    # Non-admins only see the widgets built from their own Sales-Rep-attributed data -
+    # same rule as getSheetData, applied here per-section since Home aggregates across
+    # several sheets rather than returning one table.
+    is_admin, viewer_rep = _viewer_context()
+    scoped = (not is_admin) and bool(viewer_rep)
+
     def fmt(ms):
         return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
 
@@ -896,7 +931,10 @@ def getHomeData():
     if leads_ws is not None:
         headers, rows = _read(leads_ws)
         c = {h: i for i, h in enumerate(headers)}
+        rep_i = c.get("Sales Rep")
         for row in rows:
+            if not _owned_by_viewer(row, rep_i, scoped, viewer_rep):
+                continue
             created = _to_ms(row[c["Created Time"]]) if "Created Time" in c and c["Created Time"] < len(row) else None
             if created is not None and created >= week_ago:
                 leads_past_week += 1
@@ -913,7 +951,10 @@ def getHomeData():
     if deals_ws is not None:
         headers, rows = _read(deals_ws)
         c = {h: i for i, h in enumerate(headers)}
+        rep_i = c.get("Sales Rep")
         for row in rows:
+            if not _owned_by_viewer(row, rep_i, scoped, viewer_rep):
+                continue
             stage_raw = str(row[c["Stage"]]).strip() if "Stage" in c and c["Stage"] < len(row) else ""
             stage = next((s for s in DEAL_STAGES if s.lower() == stage_raw.lower()), None)
             name = (row[c["Deal Name"]] if "Deal Name" in c and row[c["Deal Name"]] else "") or "Deal"
@@ -941,6 +982,25 @@ def getHomeData():
     follow_ups.sort(key=lambda x: x["daysOverdue"], reverse=True)
     stale_bids.sort(key=lambda x: x["daysOpen"], reverse=True)
 
+    # Accounts are read once, up front, and reused for both visit-ownership scoping
+    # (Visits carry no Sales Rep of their own - ownership comes from the Account they
+    # were logged against) and the overdue-visits check further down.
+    ensureAccountsVisitColumns_()
+    acc_ws = sheets.get_worksheet("Accounts")
+    acc_headers, acc_rows = _read(acc_ws) if acc_ws is not None else ([], [])
+    acc_c = {h: i for i, h in enumerate(acc_headers)}
+    acc_rep_i = acc_c.get("Sales Rep")
+    owned_account_ids = None
+    if scoped:
+        aid_i = acc_c.get("Account ID")
+        owned_account_ids = set()
+        if aid_i is not None:
+            for row in acc_rows:
+                if _owned_by_viewer(row, acc_rep_i, scoped, viewer_rep):
+                    aid = row[aid_i] if aid_i < len(row) else None
+                    if aid:
+                        owned_account_ids.add(aid)
+
     latest_visit = {}
     visits_past_week = 0
     visits_ws = sheets.get_worksheet("Visits")
@@ -948,38 +1008,37 @@ def getHomeData():
         headers, rows = _read(visits_ws)
         c = {h: i for i, h in enumerate(headers)}
         for row in rows:
+            acc = row[c["Account ID"]] if "Account ID" in c and c["Account ID"] < len(row) else None
+            if owned_account_ids is not None and acc not in owned_account_ids:
+                continue
             ms = _to_ms(row[c["Visit Date"]]) if "Visit Date" in c and c["Visit Date"] < len(row) else None
             if ms is None:
                 continue
             if ms >= week_ago:
                 visits_past_week += 1
-            acc = row[c["Account ID"]] if "Account ID" in c and c["Account ID"] < len(row) else None
             if acc and (acc not in latest_visit or ms > latest_visit[acc]):
                 latest_visit[acc] = ms
 
     overdue_visits = []
-    ensureAccountsVisitColumns_()
-    acc_ws = sheets.get_worksheet("Accounts")
-    if acc_ws is not None:
-        headers, rows = _read(acc_ws)
-        c = {h: i for i, h in enumerate(headers)}
-        for row in rows:
-            aid = row[c["Account ID"]] if "Account ID" in c and c["Account ID"] < len(row) else None
-            if not aid:
-                continue
-            # A brand-new account with zero visits yet isn't "neglected" - give it a
-            # week before it starts showing up as overdue/never-visited.
-            created = _to_ms(row[c["Created Time"]]) if "Created Time" in c and c["Created Time"] < len(row) else None
-            if created is not None and created >= week_ago:
-                continue
-            nm = (row[c["Account Name"]] if "Account Name" in c and row[c["Account Name"]] else aid)
-            last = latest_visit.get(aid)
-            if not last:
-                overdue_visits.append({"name": nm, "lastVisit": None, "daysSince": None})
-            else:
-                days = (now_ms - last) // DAY_MS
-                if days > 30:
-                    overdue_visits.append({"name": nm, "lastVisit": fmt(last), "daysSince": days})
+    for row in acc_rows:
+        if not _owned_by_viewer(row, acc_rep_i, scoped, viewer_rep):
+            continue
+        aid = row[acc_c["Account ID"]] if "Account ID" in acc_c and acc_c["Account ID"] < len(row) else None
+        if not aid:
+            continue
+        # A brand-new account with zero visits yet isn't "neglected" - give it a
+        # week before it starts showing up as overdue/never-visited.
+        created = _to_ms(row[acc_c["Created Time"]]) if "Created Time" in acc_c and acc_c["Created Time"] < len(row) else None
+        if created is not None and created >= week_ago:
+            continue
+        nm = (row[acc_c["Account Name"]] if "Account Name" in acc_c and row[acc_c["Account Name"]] else aid)
+        last = latest_visit.get(aid)
+        if not last:
+            overdue_visits.append({"name": nm, "lastVisit": None, "daysSince": None})
+        else:
+            days = (now_ms - last) // DAY_MS
+            if days > 30:
+                overdue_visits.append({"name": nm, "lastVisit": fmt(last), "daysSince": days})
     # Never-visited accounts (daysSince=None) are the most urgent, not the least - treat
     # them as infinitely overdue so they sort first instead of ranking behind every
     # account with even one old visit.
@@ -990,8 +1049,11 @@ def getHomeData():
     if contacts_ws is not None:
         headers, rows = _read(contacts_ws)
         c = {h: i for i, h in enumerate(headers)}
+        rep_i = c.get("Sales Rep")
         if "Date of Birth" in c:
             for row in rows:
+                if not _owned_by_viewer(row, rep_i, scoped, viewer_rep):
+                    continue
                 dob_raw = row[c["Date of Birth"]] if c["Date of Birth"] < len(row) else None
                 dob_ms = _to_ms(dob_raw)
                 if dob_ms is None:
@@ -1175,6 +1237,12 @@ def getAnalyticsData(opts=None):
     UNASSIGNED = "(Unassigned)"
     rep_filter = opts.get("rep") or ""
     terr_filter = opts.get("territory") or ""
+
+    # A non-admin can't widen this past their own name by tampering with the request -
+    # override whatever rep filter the client sent, don't just hide the dropdown option.
+    is_admin, viewer_rep = _viewer_context()
+    if not is_admin and viewer_rep:
+        rep_filter = viewer_rep
 
     def parse_day(s, end_of_day):
         if not s:
@@ -1442,7 +1510,10 @@ def getAnalyticsData(opts=None):
             "perMonth": [{"month": m, "count": visits_per_month[m]} for m in sorted(visits_per_month.keys())],
         },
         "filterOptions": {
-            "reps": [rep_options[k] for k in sorted(rep_options.keys())],
+            # A non-admin's own name only - the full roster (scanned above regardless
+            # of scoping, since it also drives which rows seg_match lets through) isn't
+            # data they're otherwise shown, so it shouldn't leak through here either.
+            "reps": [viewer_rep] if (not is_admin and viewer_rep) else [rep_options[k] for k in sorted(rep_options.keys())],
             "territories": [terr_options[k] for k in sorted(terr_options.keys())],
         },
     }

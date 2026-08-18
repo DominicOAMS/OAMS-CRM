@@ -2457,7 +2457,17 @@
       sel.innerHTML = html;
       sel.value = current; // keep selection if still valid
     };
-    build('analyticsRep', (filterOptions && filterOptions.reps) || [], 'All reps');
+    if (window.isAdmin) {
+      build('analyticsRep', (filterOptions && filterOptions.reps) || [], 'All reps');
+    } else {
+      // getAnalyticsData already forces this viewer's own rep filter server-side
+      // regardless of what's selected here - lock the control so the UI doesn't show
+      // a choice that isn't real, rather than a working-looking dropdown that
+      // silently has no effect (and that would otherwise list every other rep's name).
+      const repSel = document.getElementById('analyticsRep');
+      repSel.innerHTML = '<option value="" selected>Just me</option>';
+      repSel.disabled = true;
+    }
     build('analyticsTerritory', (filterOptions && filterOptions.territories) || [], 'All territories');
     analyticsOptionsLoaded = true;
   }
@@ -3036,12 +3046,13 @@
       <tr>
         <td><div class="cell-view">${escapeHtml(u.username)}</div></td>
         <td><div class="cell-view${u.email ? '' : ' empty'}">${u.email ? escapeHtml(u.email) : '—'}</div></td>
+        <td><div class="cell-view${u.salesRepName ? '' : ' empty'}" onclick="promptEditSalesRepName(${u.id}, '${escapeHtml(u.username)}', '${escapeHtml(u.salesRepName).replace(/'/g, "\\'")}')" title="Click to edit">${u.salesRepName ? escapeHtml(u.salesRepName) : '—'}</div></td>
         <td><span class="home-tag">${u.isAdmin ? 'Admin' : 'User'}</span></td>
         <td style="white-space:nowrap;">
           <button class="btn btn-secondary" style="padding:5px 10px; font-size:12px;" onclick="promptResetUserPassword(${u.id}, '${escapeHtml(u.username)}')">Reset Password</button>
           <button class="btn btn-secondary btn-danger-outline" style="padding:5px 10px; font-size:12px;" onclick="promptDeleteUser(${u.id}, '${escapeHtml(u.username)}')">Delete</button>
         </td>
-      </tr>`).join('') || `<tr><td colspan="4" style="text-align:center; color:#a0aabf; padding:28px; font-size:13px;">No users yet</td></tr>`;
+      </tr>`).join('') || `<tr><td colspan="5" style="text-align:center; color:#a0aabf; padding:28px; font-size:13px;">No users yet</td></tr>`;
   }
 
   document.getElementById('addUserBtn') && document.getElementById('addUserBtn').addEventListener('click', () => {
@@ -3059,6 +3070,10 @@
         <div class="form-field">
           <label class="form-label">Password</label>
           <input id="new-user-password" type="password" class="swal2-input swal-field-input" placeholder="At least 6 characters" autocomplete="new-password">
+        </div>
+        <div class="form-field">
+          <label class="form-label">Sales Rep Name (optional)</label>
+          <input id="new-user-rep-name" class="swal2-input swal-field-input" placeholder="Must match their 'Sales Rep' value on records, e.g. Juan Dela Cruz">
         </div>
         <div class="form-field" style="display:flex; align-items:center; gap:8px;">
           <input id="new-user-admin" type="checkbox" style="width:16px; height:16px; margin:0;">
@@ -3079,7 +3094,8 @@
           username: username,
           email: document.getElementById('new-user-email').value.trim(),
           password: password,
-          isAdmin: document.getElementById('new-user-admin').checked
+          isAdmin: document.getElementById('new-user-admin').checked,
+          salesRepName: document.getElementById('new-user-rep-name').value.trim()
         };
       }
     }).then(result => {
@@ -3089,10 +3105,35 @@
         google.script.run
           .withSuccessHandler(list => { Swal.close(); renderUsersTable(list); })
           .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
-          .addUser(v.username, v.email, v.password, v.isAdmin);
+          .addUser(v.username, v.email, v.password, v.isAdmin, v.salesRepName);
       }
     });
   });
+
+  // A non-admin only sees records where "Sales Rep" matches this name (case-
+  // insensitive) - left blank, their account isn't scoped at all (sees everything),
+  // which is why this is editable separately from a required field at creation time.
+  window.promptEditSalesRepName = function(userId, username, currentName) {
+    Swal.fire({
+      title: `Sales Rep Name for ${username}`,
+      input: 'text',
+      inputValue: currentName || '',
+      inputPlaceholder: 'e.g. Juan Dela Cruz (must match their "Sales Rep" value on records)',
+      showCancelButton: true,
+      confirmButtonText: 'Save',
+      confirmButtonColor: '#0088ff',
+      heightAuto: false,
+      scrollbarPadding: false
+    }).then(result => {
+      if (result.isConfirmed) {
+        Swal.fire({ title: 'Updating...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+        google.script.run
+          .withSuccessHandler(list => { Swal.close(); renderUsersTable(list); })
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .updateUserSalesRepName(userId, result.value.trim());
+      }
+    });
+  };
 
   window.promptResetUserPassword = function(userId, username) {
     Swal.fire({

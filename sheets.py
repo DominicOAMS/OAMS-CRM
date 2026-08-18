@@ -91,10 +91,27 @@ class User(Base):
     email = Column(String(255), nullable=True)
     password_hash = Column(String(255), nullable=False)
     is_admin = Column(Boolean, default=False)
+    # Matched (case-insensitively) against the free-text "Sales Rep" column on Leads/
+    # Contacts/Accounts/Deals to scope a non-admin's visibility to their own records -
+    # the login username is often terser/different from the name reps actually use in
+    # that column (e.g. "jdoe" vs "Juan Dela Cruz"), so this is tracked separately.
+    display_name = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 Base.metadata.create_all(engine)
+
+# create_all() only creates tables that don't exist yet - it won't retrofit a new
+# column (display_name) onto a "users" table that already exists from before this
+# column was added. Self-heal it the same way the dynamic sheet columns self-heal
+# elsewhere in this app, swallowing the "already exists" case so this stays a no-op
+# on every later startup once the column is actually there.
+try:
+    with engine.connect() as _conn:
+        _conn.exec_driver_sql("ALTER TABLE users ADD COLUMN display_name VARCHAR(255)")
+        _conn.commit()
+except Exception:
+    pass
 
 # Hash of the initial admin password ("oams1010") - never stored in plain text, only
 # this one-way hash. Seeded once, only if the users table is empty; change the password

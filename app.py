@@ -112,12 +112,14 @@ _register(drive, [
     "getDocuments", "createDocFolder", "uploadDocuments", "renameDocItem", "deleteDocItem",
 ])
 _register(users, ["listUsers", "addUser", "deleteUser", "updateUserPassword",
-                   "updateUserSalesRepName", "updateUserManagedReps"])
+                   "updateUserSalesRepName", "updateUserManagedReps",
+                   "updateUserEmail", "updateUserIsAdmin"])
 
 # These manage OTHER people's accounts, so - unlike everything else behind the login
 # gate - they additionally require the current session to be an admin.
 _ADMIN_ONLY_RPC = {"listUsers", "addUser", "deleteUser", "updateUserPassword",
-                   "updateUserSalesRepName", "updateUserManagedReps"}
+                   "updateUserSalesRepName", "updateUserManagedReps",
+                   "updateUserEmail", "updateUserIsAdmin"}
 
 
 @app.route("/")

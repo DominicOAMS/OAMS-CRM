@@ -60,6 +60,28 @@ def updateUserManagedReps(userId, managedReps):
     return listUsers()
 
 
+def updateUserEmail(userId, email):
+    with SessionLocal() as s:
+        u = s.get(User, int(userId))
+        if not u:
+            raise Exception("User not found.")
+        u.email = (email or "").strip() or None
+        s.commit()
+    return listUsers()
+
+
+def updateUserIsAdmin(userId, isAdmin):
+    with SessionLocal() as s:
+        u = s.get(User, int(userId))
+        if not u:
+            raise Exception("User not found.")
+        if u.is_admin and not isAdmin and s.query(User).filter(User.is_admin.is_(True)).count() <= 1:
+            raise Exception("Can't remove admin from the last admin account.")
+        u.is_admin = bool(isAdmin)
+        s.commit()
+    return listUsers()
+
+
 def deleteUser(userId):
     with SessionLocal() as s:
         u = s.get(User, int(userId))

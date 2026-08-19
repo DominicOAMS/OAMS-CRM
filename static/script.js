@@ -3527,10 +3527,10 @@
     tbody.innerHTML = (list || []).map(u => `
       <tr>
         <td><div class="cell-view">${escapeHtml(u.username)}</div></td>
-        <td><div class="cell-view${u.email ? '' : ' empty'}">${u.email ? escapeHtml(u.email) : '—'}</div></td>
+        <td><div class="cell-view${u.email ? '' : ' empty'}" onclick="promptEditUserEmail(${u.id}, '${escapeHtml(u.username)}', '${escapeHtml(u.email).replace(/'/g, "\\'")}')" title="Click to edit">${u.email ? escapeHtml(u.email) : '—'}</div></td>
         <td><div class="cell-view${u.salesRepName ? '' : ' empty'}" onclick="promptEditSalesRepName(${u.id}, '${escapeHtml(u.username)}', '${escapeHtml(u.salesRepName).replace(/'/g, "\\'")}')" title="Click to edit">${u.salesRepName ? escapeHtml(u.salesRepName) : '—'}</div></td>
         <td><div class="cell-view${u.managedReps ? '' : ' empty'}" onclick="promptEditManagedReps(${u.id}, '${escapeHtml(u.username)}', '${escapeHtml(u.managedReps).replace(/'/g, "\\'")}')" title="Click to edit - a comma-separated list makes this a Manager">${u.managedReps ? escapeHtml(u.managedReps) : '—'}</div></td>
-        <td><span class="home-tag">${u.isAdmin ? 'Admin' : (u.managedReps ? 'Manager' : 'User')}</span></td>
+        <td><span class="home-tag" style="cursor:pointer;" onclick="promptToggleAdmin(${u.id}, '${escapeHtml(u.username)}', ${u.isAdmin ? 'true' : 'false'})" title="Click to toggle admin access">${u.isAdmin ? 'Admin' : (u.managedReps ? 'Manager' : 'User')}</span></td>
         <td style="white-space:nowrap;">
           <button class="btn btn-secondary" style="padding:5px 10px; font-size:12px;" onclick="promptResetUserPassword(${u.id}, '${escapeHtml(u.username)}')">Reset Password</button>
           <button class="btn btn-secondary btn-danger-outline" style="padding:5px 10px; font-size:12px;" onclick="promptDeleteUser(${u.id}, '${escapeHtml(u.username)}')">Delete</button>
@@ -3597,6 +3597,55 @@
       }
     });
   });
+
+  window.promptEditUserEmail = function(userId, username, currentEmail) {
+    Swal.fire({
+      title: `Email for ${username}`,
+      input: 'email',
+      inputValue: currentEmail || '',
+      inputPlaceholder: 'jsmith@example.com',
+      showCancelButton: true,
+      confirmButtonText: 'Save',
+      confirmButtonColor: '#0088ff',
+      heightAuto: false,
+      scrollbarPadding: false
+    }).then(result => {
+      if (result.isConfirmed) {
+        Swal.fire({ title: 'Updating...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+        google.script.run
+          .withSuccessHandler(list => { Swal.close(); renderUsersTable(list); })
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .updateUserEmail(userId, result.value.trim());
+      }
+    });
+  };
+
+  // Grants/revokes the *admin* flag specifically - independent of the Manager badge,
+  // which just reflects whether "Manages" is set. Backend refuses to demote the last
+  // remaining admin, same guard as deleting the last admin account.
+  window.promptToggleAdmin = function(userId, username, currentlyAdmin) {
+    const grant = !currentlyAdmin;
+    Swal.fire({
+      title: grant ? `Grant admin access to ${username}?` : `Remove admin access from ${username}?`,
+      text: grant
+        ? 'They will be able to manage every user account, including resetting passwords.'
+        : "They'll lose access to User Settings and go back to seeing only their own (or their team's) data.",
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: grant ? '#0088ff' : '#d93025',
+      confirmButtonText: grant ? 'Grant Admin' : 'Remove Admin',
+      heightAuto: false,
+      scrollbarPadding: false
+    }).then(result => {
+      if (result.isConfirmed) {
+        Swal.fire({ title: 'Updating...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+        google.script.run
+          .withSuccessHandler(list => { Swal.close(); renderUsersTable(list); })
+          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+          .updateUserIsAdmin(userId, grant);
+      }
+    });
+  };
 
   // A non-admin only sees records where "Sales Rep" matches this name (case-
   // insensitive) - left blank, their account isn't scoped at all (sees everything),

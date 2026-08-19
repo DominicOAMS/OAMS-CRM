@@ -13,7 +13,7 @@ No Google, no accounts. Default DB is a local file (config.DATABASE_URL).
 
 import datetime
 
-from sqlalchemy import create_engine, Column, String, Integer, JSON, LargeBinary, DateTime, ForeignKey, Boolean, text
+from sqlalchemy import create_engine, Column, String, Integer, JSON, LargeBinary, DateTime, ForeignKey, Boolean, Text, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from config import DATABASE_URL
@@ -96,19 +96,29 @@ class User(Base):
     # the login username is often terser/different from the name reps actually use in
     # that column (e.g. "jdoe" vs "Juan Dela Cruz"), so this is tracked separately.
     display_name = Column(String(255), nullable=True)
+    # Comma-separated Sales Rep Names this account also sees, in addition to its own
+    # display_name - what makes a "Manager": everyone else is scoped to just their own
+    # name, a Manager is scoped to their own name plus this list (their team), without
+    # needing the full admin (manage-other-accounts) permission.
+    managed_reps = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 Base.metadata.create_all(engine)
 
 # create_all() only creates tables that don't exist yet - it won't retrofit a new
-# column (display_name) onto a "users" table that already exists from before this
-# column was added. Self-heal it the same way the dynamic sheet columns self-heal
-# elsewhere in this app, swallowing the "already exists" case so this stays a no-op
-# on every later startup once the column is actually there.
+# column onto a "users" table that already exists from before the column was added.
+# Self-heal it the same way the dynamic sheet columns self-heal elsewhere in this app,
+# swallowing the "already exists" case so this stays a no-op once the column is there.
 try:
     with engine.connect() as _conn:
         _conn.exec_driver_sql("ALTER TABLE users ADD COLUMN display_name VARCHAR(255)")
+        _conn.commit()
+except Exception:
+    pass
+try:
+    with engine.connect() as _conn:
+        _conn.exec_driver_sql("ALTER TABLE users ADD COLUMN managed_reps TEXT")
         _conn.commit()
 except Exception:
     pass

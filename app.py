@@ -72,6 +72,7 @@ def login():
             # rather than silently seeing nothing because its username matches no
             # "Sales Rep" value in the data.
             session["sales_rep_name"] = user["salesRepName"] or ""
+            session["managed_reps"] = user["managedReps"] or ""
             session.permanent = True
             return redirect(url_for("index"))
         error = "Invalid username or password."
@@ -110,11 +111,13 @@ _register(logic, [
 _register(drive, [
     "getDocuments", "createDocFolder", "uploadDocuments", "renameDocItem", "deleteDocItem",
 ])
-_register(users, ["listUsers", "addUser", "deleteUser", "updateUserPassword", "updateUserSalesRepName"])
+_register(users, ["listUsers", "addUser", "deleteUser", "updateUserPassword",
+                   "updateUserSalesRepName", "updateUserManagedReps"])
 
 # These manage OTHER people's accounts, so - unlike everything else behind the login
 # gate - they additionally require the current session to be an admin.
-_ADMIN_ONLY_RPC = {"listUsers", "addUser", "deleteUser", "updateUserPassword", "updateUserSalesRepName"}
+_ADMIN_ONLY_RPC = {"listUsers", "addUser", "deleteUser", "updateUserPassword",
+                   "updateUserSalesRepName", "updateUserManagedReps"}
 
 
 @app.route("/")

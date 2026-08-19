@@ -13,7 +13,8 @@ MIN_PASSWORD_LENGTH = 6
 
 def _serialize(u):
     return {"id": u.id, "username": u.username, "email": u.email or "",
-            "salesRepName": u.display_name or "", "isAdmin": bool(u.is_admin)}
+            "salesRepName": u.display_name or "", "managedReps": u.managed_reps or "",
+            "isAdmin": bool(u.is_admin)}
 
 
 def listUsers():
@@ -22,7 +23,7 @@ def listUsers():
         return [_serialize(u) for u in rows]
 
 
-def addUser(username, email, password, isAdmin=False, salesRepName=None):
+def addUser(username, email, password, isAdmin=False, salesRepName=None, managedReps=None):
     username = (username or "").strip()
     if not username:
         raise Exception("Username is required.")
@@ -33,7 +34,8 @@ def addUser(username, email, password, isAdmin=False, salesRepName=None):
             raise Exception('A user named "%s" already exists.' % username)
         s.add(User(username=username, email=(email or "").strip() or None,
                     password_hash=generate_password_hash(password), is_admin=bool(isAdmin),
-                    display_name=(salesRepName or "").strip() or None))
+                    display_name=(salesRepName or "").strip() or None,
+                    managed_reps=(managedReps or "").strip() or None))
         s.commit()
     return listUsers()
 
@@ -44,6 +46,16 @@ def updateUserSalesRepName(userId, salesRepName):
         if not u:
             raise Exception("User not found.")
         u.display_name = (salesRepName or "").strip() or None
+        s.commit()
+    return listUsers()
+
+
+def updateUserManagedReps(userId, managedReps):
+    with SessionLocal() as s:
+        u = s.get(User, int(userId))
+        if not u:
+            raise Exception("User not found.")
+        u.managed_reps = (managedReps or "").strip() or None
         s.commit()
     return listUsers()
 

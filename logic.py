@@ -64,23 +64,41 @@ def _to_ms(v):
 
 
 def _viewer_context():
-    """(is_admin, rep_name) for the currently logged-in session. Reads Flask's session
-    directly rather than threading a parameter through every function's signature -
-    every function here always runs inside a request via the /api/rpc dispatcher, so
-    this is a pragmatic shortcut for a single-Flask-app codebase, not a reusable
-    library concern. Imported locally so this module has no hard Flask dependency for
-    the (rare) code path that isn't request-scoped."""
+    """(is_admin, own_rep, visible_reps) for the currently logged-in session. own_rep is
+    this account's own Sales Rep Name (used when tagging something as created by them,
+    e.g. a Task's Owner). visible_reps is the full set of names their non-admin view is
+    scoped to: just [own_rep] for a plain rep, or own_rep plus their configured "managed"
+    team for a Manager account (own_rep may be blank for a Manager who doesn't
+    personally carry a rep name, in which case it's just their team).
+
+    Reads Flask's session directly rather than threading a parameter through every
+    function's signature - every function here always runs inside a request via the
+    /api/rpc dispatcher, so this is a pragmatic shortcut for a single-Flask-app
+    codebase, not a reusable library concern. Imported locally so this module has no
+    hard Flask dependency for the (rare) code path that isn't request-scoped."""
     from flask import session
-    return bool(session.get("is_admin")), (session.get("sales_rep_name") or "").strip()
+    is_admin = bool(session.get("is_admin"))
+    own_rep = (session.get("sales_rep_name") or "").strip()
+    managed = [m.strip() for m in (session.get("managed_reps") or "").split(",") if m.strip()]
+    visible_reps = []
+    seen = set()
+    for name in ([own_rep] if own_rep else []) + managed:
+        key = name.lower()
+        if key not in seen:
+            seen.add(key)
+            visible_reps.append(name)
+    return is_admin, own_rep, visible_reps
 
 
-def _owned_by_viewer(row, rep_col_index, scoped, viewer_rep):
+def _owned_by_viewer(row, rep_col_index, scoped, visible_reps):
     """True unless per-rep scoping is active, the row has a Sales Rep column to check,
-    and that column's value doesn't match the viewer's own name."""
+    and that column's value doesn't match any name the viewer is allowed to see (their
+    own name, plus their team's if they manage one)."""
     if not scoped or rep_col_index is None:
         return True
     val = row[rep_col_index] if rep_col_index < len(row) else ""
-    return _norm(val).lower() == viewer_rep.lower()
+    v = _norm(val).lower()
+    return any(v == name.lower() for name in visible_reps)
 
 
 def _next_birthday(dob_ms, today):
@@ -308,14 +326,15 @@ def getSheetData(sheetName):
             if r[aci]:
                 r[aci] = _strip_link(r[aci])
 
-    # Non-admins only see rows attributed to their own name in "Sales Rep" - applies
-    # automatically to whichever sheet actually has that column (Leads/Contacts/
-    # Accounts/Deals today), and to nothing else (e.g. Visits, Attachments, Users,
-    # any custom sheet without it), since there's no ownership signal to check there.
-    is_admin, viewer_rep = _viewer_context()
-    if not is_admin and viewer_rep and "Sales Rep" in header_values:
+    # Non-admins only see rows attributed to their own name (or their team's, for a
+    # Manager) in "Sales Rep" - applies automatically to whichever sheet actually has
+    # that column (Leads/Contacts/Accounts/Deals today), and to nothing else (e.g.
+    # Visits, Attachments, Users, any custom sheet without it), since there's no
+    # ownership signal to check there.
+    is_admin, _, visible_reps = _viewer_context()
+    if not is_admin and visible_reps and "Sales Rep" in header_values:
         rep_i = header_values.index("Sales Rep")
-        rows = [r for r in rows if _owned_by_viewer(r, rep_i, True, viewer_rep)]
+        rows = [r for r in rows if _owned_by_viewer(r, rep_i, True, visible_reps)]
 
     return {"columns": columns, "rows": rows}
 
@@ -726,7 +745,7 @@ def addTask(entityType, entityId, entityLabel, title, dueDate):
     if ews is None or findRowByIdColumn_(ews, id_col, entityId) == -1:
         raise Exception("%s not found: %s" % (entityType, entityId))
 
-    _, viewer_rep = _viewer_context()
+    _, own_rep, _ = _viewer_context()
 
     getSheetData("Tasks")  # self-heals the sheet into existence via DEFAULT_HEADERS
     addRecordData("Tasks", {
@@ -736,7 +755,7 @@ def addTask(entityType, entityId, entityLabel, title, dueDate):
         "Entity Label": entityLabel or "",
         "Title": title.strip(),
         "Due Date": dueDate or "",
-        "Owner": viewer_rep,
+        "Owner": own_rep,
         "Done": "No",
         "Created Time": _now_str(),
     })
@@ -781,13 +800,15 @@ def listMyTasks():
     if not rows:
         return []
     idx = {h: i for i, h in enumerate(headers)}
-    is_admin, viewer_rep = _viewer_context()
+    is_admin, _, visible_reps = _viewer_context()
     results = []
     for r in rows:
         owner = r[idx["Owner"]] if "Owner" in idx and idx["Owner"] < len(r) else ""
-        # Same "don't scope" fallback as getSheetData - an admin sees every task, and
-        # so does a non-admin account nobody has assigned a Sales Rep Name to yet.
-        if not is_admin and viewer_rep and _norm(owner).lower() != viewer_rep.lower():
+        # Same "don't scope" fallback as getSheetData - an admin sees every task, and so
+        # does a non-admin account nobody has assigned a Sales Rep Name to yet. A Manager
+        # sees their whole team's tasks here, not just their own - same visible_reps set
+        # used everywhere else, since there's no separate "Team Tasks" view.
+        if not is_admin and visible_reps and not any(_norm(owner).lower() == r2.lower() for r2 in visible_reps):
             continue
         due_ms = _to_ms(r[idx["Due Date"]]) if "Due Date" in idx and idx["Due Date"] < len(r) else None
         results.append((due_ms, {
@@ -1144,8 +1165,8 @@ def getHomeData():
     # Non-admins only see the widgets built from their own Sales-Rep-attributed data -
     # same rule as getSheetData, applied here per-section since Home aggregates across
     # several sheets rather than returning one table.
-    is_admin, viewer_rep = _viewer_context()
-    scoped = (not is_admin) and bool(viewer_rep)
+    is_admin, _, visible_reps = _viewer_context()
+    scoped = (not is_admin) and bool(visible_reps)
 
     def fmt(ms):
         return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
@@ -1160,7 +1181,7 @@ def getHomeData():
         c = {h: i for i, h in enumerate(headers)}
         rep_i = c.get("Sales Rep")
         for row in rows:
-            if not _owned_by_viewer(row, rep_i, scoped, viewer_rep):
+            if not _owned_by_viewer(row, rep_i, scoped, visible_reps):
                 continue
             created = _to_ms(row[c["Created Time"]]) if "Created Time" in c and c["Created Time"] < len(row) else None
             if created is not None and created >= week_ago:
@@ -1180,7 +1201,7 @@ def getHomeData():
         c = {h: i for i, h in enumerate(headers)}
         rep_i = c.get("Sales Rep")
         for row in rows:
-            if not _owned_by_viewer(row, rep_i, scoped, viewer_rep):
+            if not _owned_by_viewer(row, rep_i, scoped, visible_reps):
                 continue
             stage_raw = str(row[c["Stage"]]).strip() if "Stage" in c and c["Stage"] < len(row) else ""
             stage = next((s for s in DEAL_STAGES if s.lower() == stage_raw.lower()), None)
@@ -1223,7 +1244,7 @@ def getHomeData():
         owned_account_ids = set()
         if aid_i is not None:
             for row in acc_rows:
-                if _owned_by_viewer(row, acc_rep_i, scoped, viewer_rep):
+                if _owned_by_viewer(row, acc_rep_i, scoped, visible_reps):
                     aid = row[aid_i] if aid_i < len(row) else None
                     if aid:
                         owned_account_ids.add(aid)
@@ -1248,7 +1269,7 @@ def getHomeData():
 
     overdue_visits = []
     for row in acc_rows:
-        if not _owned_by_viewer(row, acc_rep_i, scoped, viewer_rep):
+        if not _owned_by_viewer(row, acc_rep_i, scoped, visible_reps):
             continue
         aid = row[acc_c["Account ID"]] if "Account ID" in acc_c and acc_c["Account ID"] < len(row) else None
         if not aid:
@@ -1279,7 +1300,7 @@ def getHomeData():
         rep_i = c.get("Sales Rep")
         if "Date of Birth" in c:
             for row in rows:
-                if not _owned_by_viewer(row, rep_i, scoped, viewer_rep):
+                if not _owned_by_viewer(row, rep_i, scoped, visible_reps):
                     continue
                 dob_raw = row[c["Date of Birth"]] if c["Date of Birth"] < len(row) else None
                 dob_ms = _to_ms(dob_raw)
@@ -1314,8 +1335,8 @@ def getHomeData():
 # the client buckets by day and paginates by month) ----
 
 def getCalendarEvents():
-    is_admin, viewer_rep = _viewer_context()
-    scoped = (not is_admin) and bool(viewer_rep)
+    is_admin, _, visible_reps = _viewer_context()
+    scoped = (not is_admin) and bool(visible_reps)
     events = []
 
     def fmt(ms):
@@ -1328,7 +1349,7 @@ def getCalendarEvents():
         c = {h: i for i, h in enumerate(headers)}
         rep_i = c.get("Sales Rep")
         for row in rows:
-            if not _owned_by_viewer(row, rep_i, scoped, viewer_rep):
+            if not _owned_by_viewer(row, rep_i, scoped, visible_reps):
                 continue
             fu = _to_ms(row[c["Next Follow-up"]]) if "Next Follow-up" in c and c["Next Follow-up"] < len(row) else None
             if fu is None:
@@ -1345,7 +1366,7 @@ def getCalendarEvents():
         c = {h: i for i, h in enumerate(headers)}
         rep_i = c.get("Sales Rep")
         for row in rows:
-            if not _owned_by_viewer(row, rep_i, scoped, viewer_rep):
+            if not _owned_by_viewer(row, rep_i, scoped, visible_reps):
                 continue
             fu = _to_ms(row[c["Next Follow-up"]]) if "Next Follow-up" in c and c["Next Follow-up"] < len(row) else None
             if fu is None:
@@ -1368,7 +1389,7 @@ def getCalendarEvents():
         owned_account_ids = set()
         if aid_i is not None:
             for row in acc_rows:
-                if _owned_by_viewer(row, acc_rep_i, scoped, viewer_rep):
+                if _owned_by_viewer(row, acc_rep_i, scoped, visible_reps):
                     aid = row[aid_i] if aid_i < len(row) else None
                     if aid:
                         owned_account_ids.add(aid)
@@ -1394,7 +1415,7 @@ def getCalendarEvents():
         c = {h: i for i, h in enumerate(headers)}
         for row in rows:
             owner = row[c["Owner"]] if "Owner" in c and c["Owner"] < len(row) else ""
-            if not is_admin and viewer_rep and _norm(owner).lower() != viewer_rep.lower():
+            if not is_admin and visible_reps and not any(_norm(owner).lower() == r.lower() for r in visible_reps):
                 continue
             due_ms = _to_ms(row[c["Due Date"]]) if "Due Date" in c and c["Due Date"] < len(row) else None
             if due_ms is None:
@@ -1565,11 +1586,14 @@ def getAnalyticsData(opts=None):
     rep_filter = opts.get("rep") or ""
     terr_filter = opts.get("territory") or ""
 
-    # A non-admin can't widen this past their own name by tampering with the request -
-    # override whatever rep filter the client sent, don't just hide the dropdown option.
-    is_admin, viewer_rep = _viewer_context()
-    if not is_admin and viewer_rep:
-        rep_filter = viewer_rep
+    # A non-admin can't widen this past their own name (or, for a Manager, their team)
+    # by tampering with the request - if they asked for a rep outside that set, ignore
+    # it rather than hide the dropdown option, so seg_match's own scoping below is what
+    # actually enforces the boundary. Leaving it blank means "show my whole team".
+    is_admin, _, visible_reps = _viewer_context()
+    scoped_reps = (not is_admin) and bool(visible_reps)
+    if scoped_reps and rep_filter and not any(rep_filter.lower() == r.lower() for r in visible_reps):
+        rep_filter = ""
 
     def parse_day(s, end_of_day):
         if not s:
@@ -1597,12 +1621,17 @@ def getAnalyticsData(opts=None):
         return has_window and prev_start_ms <= ms <= prev_end_ms
 
     def seg_match(rep_val, terr_val):
+        v = _norm(rep_val)
         if rep_filter:
-            v = _norm(rep_val)
             if rep_filter == UNASSIGNED:
                 if v != "":
                     return False
             elif v.lower() != rep_filter.lower():
+                return False
+        elif scoped_reps:
+            # No specific rep chosen - default to the viewer's own name, or their
+            # whole team if they manage one, instead of every rep's numbers.
+            if not any(v.lower() == r.lower() for r in visible_reps):
                 return False
         if terr_filter:
             v = _norm(terr_val)
@@ -1837,10 +1866,11 @@ def getAnalyticsData(opts=None):
             "perMonth": [{"month": m, "count": visits_per_month[m]} for m in sorted(visits_per_month.keys())],
         },
         "filterOptions": {
-            # A non-admin's own name only - the full roster (scanned above regardless
-            # of scoping, since it also drives which rows seg_match lets through) isn't
-            # data they're otherwise shown, so it shouldn't leak through here either.
-            "reps": [viewer_rep] if (not is_admin and viewer_rep) else [rep_options[k] for k in sorted(rep_options.keys())],
+            # A non-admin only gets their own name (or, for a Manager, their team) -
+            # the full roster (scanned above regardless of scoping, since it also
+            # drives which rows seg_match lets through) isn't data they're otherwise
+            # shown, so it shouldn't leak through here either.
+            "reps": sorted(visible_reps, key=str.lower) if scoped_reps else [rep_options[k] for k in sorted(rep_options.keys())],
             "territories": [terr_options[k] for k in sorted(terr_options.keys())],
         },
     }

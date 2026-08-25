@@ -2560,7 +2560,7 @@
         <div class="calendar-day${outside ? ' calendar-day-outside' : ''}${iso === todayIso ? ' calendar-day-today' : ''}" onclick="showCalendarDay('${iso}')">
           <div class="calendar-day-num">${cellDay}</div>
           <div class="calendar-day-events">
-            ${shown.map(e => `<div class="calendar-event ${calendarKindClass(e)}" title="${escapeHtml(e.title)}">${escapeHtml(e.title)}</div>`).join('')}
+            ${shown.map(e => `<div class="calendar-event ${calendarKindClass(e)}" title="${escapeHtml(calendarEventTooltip(e))}">${escapeHtml(e.title)}</div>`).join('')}
             ${more > 0 ? `<div class="calendar-more">+${more} more</div>` : ''}
           </div>
         </div>`;
@@ -2568,19 +2568,72 @@
     document.getElementById('calendarGrid').innerHTML = html;
   }
 
+  // A bare Task title doesn't say which Lead/Account/Deal it's for - the day-grid
+  // chip is too small to show both, so the fuller "Entity: Title" goes in the
+  // hover tooltip instead; the day-detail popover below shows it inline.
+  function calendarEventTooltip(e) {
+    return (e.kind === 'Task' && e.entityLabel) ? `${e.entityLabel}: ${e.title}` : e.title;
+  }
+
+  // Optimistic, same as the Tasks modal/My Tasks list: flips this row's own styling
+  // instantly instead of waiting on a round-trip, and doesn't navigate away (the
+  // checkbox sits outside the clickable name/profile-link div, not nested in it).
+  window.submitToggleTaskDoneCalendar = function(e, taskId) {
+    const cb = e.target;
+    const nowDone = cb.checked;
+    const row = cb.closest('.home-row');
+    const titleEl = row ? row.querySelector('.task-row-title') : null;
+    const setDoneStyle = done => {
+      if (!titleEl) return;
+      titleEl.style.textDecoration = done ? 'line-through' : 'none';
+      titleEl.style.color = done ? 'var(--color-text-faint)' : '';
+    };
+    setDoneStyle(nowDone);
+    google.script.run
+      .withSuccessHandler(() => {
+        const ev = calendarEventsCache.find(x => x.taskId === taskId);
+        if (ev) ev.done = nowDone;
+        refreshTaskBadge();
+      })
+      .withFailureHandler(err => {
+        cb.checked = !nowDone;
+        setDoneStyle(!nowDone);
+        Swal.fire('Error', err.message, 'error');
+      })
+      .toggleTaskDone(taskId);
+  };
+
+  function renderCalendarDayEventRow(e) {
+    if (e.kind === 'Task') {
+      const label = e.entityLabel ? `${escapeHtml(e.entityLabel)}: ${escapeHtml(e.title)}` : escapeHtml(e.title);
+      return `
+        <div class="home-row">
+          <input type="checkbox" ${e.done ? 'checked' : ''} onchange="submitToggleTaskDoneCalendar(event, '${escapeHtml(e.taskId)}')" style="flex-shrink:0; width:16px; height:16px; cursor:pointer;">
+          <div class="home-row-main home-row-clickable" style="flex:1;" onclick="Swal.close(); jumpToTaskEntity('${escapeHtml(e.entityType)}', '${escapeHtml(e.entityId)}')">
+            <span class="task-row-title" style="${e.done ? 'text-decoration:line-through; color:var(--color-text-faint);' : ''}">${label}</span>
+          </div>
+        </div>`;
+    }
+    return `
+        <div class="home-row home-row-clickable" onclick="Swal.close(); jumpToTaskEntity('${escapeHtml(e.entityType)}', '${escapeHtml(e.entityId)}')">
+          <div class="home-row-main"><span class="calendar-dot ${calendarDotClass(e)}"></span>${escapeHtml(e.title)}</div>
+          <span class="home-tag">${escapeHtml(e.kind)}</span>
+        </div>`;
+  }
+
   window.showCalendarDay = function(dateStr) {
     const events = calendarEventsCache.filter(e => e.date === dateStr);
     const label = new Date(dateStr + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const html = events.length === 0
       ? '<p class="manage-columns-empty">Nothing on this day.</p>'
-      : events.map(e => `
-        <div class="home-row home-row-clickable" onclick="Swal.close(); jumpToTaskEntity('${escapeHtml(e.entityType)}', '${escapeHtml(e.entityId)}')">
-          <div class="home-row-main"><span class="calendar-dot ${calendarDotClass(e)}"></span>${escapeHtml(e.title)}</div>
-          <span class="home-tag">${escapeHtml(e.kind)}</span>
-        </div>`).join('');
+      : events.map(renderCalendarDayEventRow).join('');
     Swal.fire({
       title: label,
-      html: `<div style="max-height:360px; overflow-y:auto; text-align:left;">${html}</div>`,
+      // overflow-x explicitly hidden: leaving only overflow-y set makes browsers
+      // upgrade overflow-x's default (visible) to auto too, per the CSS overflow
+      // spec - a stray few px of row overflow was enough to show a real horizontal
+      // scrollbar under a two-line list that never needed one.
+      html: `<div style="max-height:360px; overflow-y:auto; overflow-x:hidden; text-align:left;">${html}</div>`,
       showConfirmButton: false,
       showCloseButton: true,
       heightAuto: false,

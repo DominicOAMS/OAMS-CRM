@@ -1534,9 +1534,12 @@ def getCalendarEvents():
             title = row[c["Title"]] if "Title" in c and c["Title"] < len(row) else "Task"
             entity_type = row[c["Entity Type"]] if "Entity Type" in c and c["Entity Type"] < len(row) else ""
             entity_id = row[c["Entity ID"]] if "Entity ID" in c and c["Entity ID"] < len(row) else ""
+            entity_label = row[c["Entity Label"]] if "Entity Label" in c and c["Entity Label"] < len(row) else ""
+            task_id = row[c["Task ID"]] if "Task ID" in c and c["Task ID"] < len(row) else ""
             done = _norm(row[c["Done"]] if "Done" in c and c["Done"] < len(row) else "").lower() in ("yes", "true", "1")
             events.append({"date": fmt(due_ms), "kind": "Task", "title": title,
-                           "entityType": entity_type, "entityId": entity_id, "done": done})
+                           "entityType": entity_type, "entityId": entity_id,
+                           "entityLabel": entity_label, "taskId": task_id, "done": done})
 
     events.sort(key=lambda e: e["date"])
     return events

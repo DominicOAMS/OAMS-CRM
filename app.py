@@ -105,7 +105,7 @@ _register(logic, [
     "listDealLineItems", "addDealLineItem", "deleteDealLineItem",
     "listTasksForEntity", "addTask", "toggleTaskDone", "deleteTask", "listMyTasks",
     "listAttachments", "uploadAttachments", "deleteAttachment",
-    "getHomeData", "getAnalyticsData", "getCalendarEvents",
+    "getHomeData", "getAnalyticsData", "getCalendarEvents", "getManagerSummary",
     "findDuplicateGroups", "mergeRecords",
 ])
 _register(drive, [
@@ -125,6 +125,7 @@ _ADMIN_ONLY_RPC = {"listUsers", "addUser", "deleteUser", "updateUserPassword",
 @app.route("/")
 def index():
     return render_template("index.html", is_admin=session.get("is_admin", False),
+                            is_manager=bool(session.get("managed_reps")),
                             username=session.get("username", ""))
 
 

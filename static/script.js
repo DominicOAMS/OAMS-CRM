@@ -57,7 +57,7 @@
   // target tab's data has actually loaded.
   let pendingTableAction = null;
 
-  document.addEventListener('DOMContentLoaded', () => switchTab('Home'));
+  document.addEventListener('DOMContentLoaded', () => { switchTab('Home'); refreshTaskBadge(); });
 
   // Mobile sidebar: off-canvas below the CSS breakpoint, toggled by the hamburger
   // button and closed by the backdrop or by picking a nav item.
@@ -316,6 +316,8 @@
       loadMyTasks();
     } else if (viewName === 'Calendar') {
       loadCalendar();
+    } else if (viewName === 'Summary') {
+      loadManagerSummary();
     } else {
       loadData(viewName);
     }
@@ -331,8 +333,10 @@
     document.getElementById('documentsView').style.display = viewName === 'Documents' ? 'block' : 'none';
     document.getElementById('myTasksView').style.display = viewName === 'MyTasks' ? 'block' : 'none';
     document.getElementById('calendarView').style.display = viewName === 'Calendar' ? 'block' : 'none';
-    // usersView only exists in the DOM for admins (the tab's Jinja block is skipped
-    // entirely for everyone else), so guard before touching it.
+    // summaryView/usersView only exist in the DOM for Manager/admin accounts (their
+    // Jinja blocks are skipped entirely for everyone else), so guard before touching them.
+    const summaryView = document.getElementById('summaryView');
+    if (summaryView) summaryView.style.display = viewName === 'Summary' ? 'block' : 'none';
     const usersView = document.getElementById('usersView');
     if (usersView) usersView.style.display = viewName === 'Users' ? 'block' : 'none';
 
@@ -461,6 +465,8 @@
           
           if (window.currentView === 'Leads') {
             bodyHtml += `<a href="#" onclick="promptConvertLead(event, ${rowIndex})">Convert Lead</a>`;
+            bodyHtml += `<a href="#" onclick="promptLogVisit(event, ${rowIndex})">Log Visit</a>`;
+            bodyHtml += `<a href="#" onclick="openVisitsModal(event, ${rowIndex})">View Visits</a>`;
             bodyHtml += `<a href="#" onclick="openRecordProfile(event, ${rowIndex})">View Profile</a>`;
             bodyHtml += `<a href="#" onclick="openTasksModalForRow(event, ${rowIndex})">Tasks</a>`;
           } else if (window.currentView === 'Accounts') {
@@ -976,26 +982,28 @@
     return d.getFullYear() + '-' + mm + '-' + dd;
   }
 
-  function getAccountFromRow(rowIndex) {
+  // Leads and Accounts both log visits, addressed the same way Tasks already
+  // addresses either - reuse PROFILE_ENTITY_CONFIG rather than a separate lookup.
+  function getVisitEntityFromRow(rowIndex) {
+    const config = PROFILE_ENTITY_CONFIG[window.currentView];
+    if (!config) return null;
     const rowData = window.currentTableData.rows[rowIndex];
     const columns = window.currentTableData.columns;
-    const idIdx = columns.findIndex(c => c.name === 'Account ID');
-    const nameIdx = columns.findIndex(c => c.name === 'Account Name');
-    return {
-      accountId: idIdx > -1 ? rowData[idIdx] : null,
-      accountName: nameIdx > -1 ? rowData[nameIdx] : 'this account'
-    };
+    const idIdx = columns.findIndex(c => c.name === config.idCol);
+    const entityId = idIdx > -1 ? rowData[idIdx] : null;
+    if (!entityId) return null;
+    return { entityType: config.entityType, entityId, entityLabel: config.getTitle(rowData, columns) };
   }
 
   window.promptLogVisit = function(e, rowIndex) {
     e.preventDefault();
     document.querySelectorAll('.action-menu-content').forEach(el => el.classList.remove('show'));
 
-    const acc = getAccountFromRow(rowIndex);
-    if (!acc.accountId) { Swal.fire('Error', 'Could not determine the Account ID for this row.', 'error'); return; }
+    const ent = getVisitEntityFromRow(rowIndex);
+    if (!ent) { Swal.fire('Error', 'Could not determine the record ID for this row.', 'error'); return; }
 
     Swal.fire({
-      title: `Log Visit - ${acc.accountName}`,
+      title: `Log Visit - ${ent.entityLabel}`,
       html: `
         <div class="form-field">
           <label class="form-label">Visit Date</label>
@@ -1026,7 +1034,7 @@
             Swal.fire({ title: 'Visit logged', icon: 'success', timer: 1400, showConfirmButton: false, heightAuto: false, scrollbarPadding: false });
           })
           .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
-          .logVisit(acc.accountId, result.value.date, result.value.notes);
+          .logVisit(ent.entityType, ent.entityId, ent.entityLabel, result.value.date, result.value.notes);
       }
     });
   };
@@ -1035,9 +1043,9 @@
     e.preventDefault();
     document.querySelectorAll('.action-menu-content').forEach(el => el.classList.remove('show'));
 
-    const acc = getAccountFromRow(rowIndex);
-    if (!acc.accountId) { Swal.fire('Error', 'Could not determine the Account ID for this row.', 'error'); return; }
-    currentVisitsContext = acc;
+    const ent = getVisitEntityFromRow(rowIndex);
+    if (!ent) { Swal.fire('Error', 'Could not determine the record ID for this row.', 'error'); return; }
+    currentVisitsContext = ent;
     visitsChanged = false;
 
     Swal.fire({ title: 'Loading visits...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
@@ -1047,7 +1055,7 @@
         showVisitsModal(visits);
       })
       .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
-      .listVisits(acc.accountId);
+      .listVisits(ent.entityType, ent.entityId);
   };
 
   function renderVisitsListHtml(visits) {
@@ -1066,7 +1074,7 @@
 
   function showVisitsModal(visits) {
     Swal.fire({
-      title: `Visits - ${currentVisitsContext.accountName}`,
+      title: `Visits - ${currentVisitsContext.entityLabel}`,
       html: `<div style="max-height:320px; overflow-y:auto;">${renderVisitsListHtml(visits)}</div>`,
       showCloseButton: true,
       showConfirmButton: false,
@@ -1079,9 +1087,9 @@
       const userClosed = result.dismiss === Swal.DismissReason.close
         || result.dismiss === Swal.DismissReason.esc
         || result.dismiss === Swal.DismissReason.backdrop;
-      if (userClosed && visitsChanged && window.currentView === 'Accounts') {
+      if (userClosed && visitsChanged && (window.currentView === 'Accounts' || window.currentView === 'Leads')) {
         visitsChanged = false;
-        loadData('Accounts');
+        loadData(window.currentView);
       }
     });
   }
@@ -2263,15 +2271,19 @@
       Swal.fire('Error', 'A task title is required.', 'error').then(() => showTasksModal(currentTasksCache));
       return;
     }
+    // Swal.fire replaces the whole modal (this shim doesn't stack modals), so the Add
+    // button is gone the instant this shows - a slow request can no longer be double-
+    // clicked into adding the same task twice, which was silently possible before.
+    Swal.fire({ title: 'Adding task...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
     google.script.run
-      .withSuccessHandler(tasks => { tasksChanged = true; showTasksModal(tasks); })
-      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .withSuccessHandler(tasks => { tasksChanged = true; showTasksModal(tasks); refreshTaskBadge(); })
+      .withFailureHandler(err => Swal.fire('Error', err.message, 'error').then(() => showTasksModal(currentTasksCache)))
       .addTask(currentTasksContext.entityType, currentTasksContext.entityId, currentTasksContext.entityLabel, title, due);
   };
 
   window.submitToggleTaskDone = function(taskId) {
     google.script.run
-      .withSuccessHandler(tasks => { tasksChanged = true; showTasksModal(tasks); })
+      .withSuccessHandler(tasks => { tasksChanged = true; showTasksModal(tasks); refreshTaskBadge(); })
       .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
       .toggleTaskDone(taskId);
   };
@@ -2288,12 +2300,33 @@
       if (result.isConfirmed) {
         Swal.fire({ title: 'Deleting...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
         google.script.run
-          .withSuccessHandler(tasks => { tasksChanged = true; Swal.close(); showTasksModal(tasks); })
+          .withSuccessHandler(tasks => { tasksChanged = true; Swal.close(); showTasksModal(tasks); refreshTaskBadge(); })
           .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
           .deleteTask(taskId);
       }
     });
   };
+
+  // Counts this viewer's own not-done tasks due today or earlier, and reflects that
+  // count as a badge on the My Tasks sidebar icon - so a rep doesn't have to click in
+  // just to find out whether anything needs attention.
+  function updateTaskBadgeFromTasks(tasks) {
+    const badge = document.getElementById('myTasksNavBadge');
+    if (!badge) return;
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const dueCount = (tasks || []).filter(t => !t.done && t.dueDate && t.dueDate <= todayIso).length;
+    badge.textContent = dueCount;
+    badge.style.display = dueCount > 0 ? 'inline-block' : 'none';
+  }
+
+  // Standalone refresh for callers (e.g. the per-entity Tasks modal) that only have a
+  // single entity's tasks on hand, not the full "my tasks" list needed for the badge.
+  // Silent on failure: a stale/missing badge isn't worth an error dialog over.
+  function refreshTaskBadge() {
+    google.script.run
+      .withSuccessHandler(updateTaskBadgeFromTasks)
+      .listMyTasks();
+  }
 
   // --- MY TASKS (a rep's own to-dos across every entity, one flat list) ---
   function loadMyTasks() {
@@ -2312,6 +2345,7 @@
 
   function renderMyTasks(tasks) {
     document.getElementById('myTasksCount').textContent = tasks.filter(t => !t.done).length;
+    updateTaskBadgeFromTasks(tasks);
     const list = document.getElementById('myTasksList');
     if (!tasks || tasks.length === 0) {
       list.innerHTML = '<p class="home-empty">No tasks yet - add one from the Tasks action on any Lead, Contact, Account, or Deal.</p>';
@@ -2508,6 +2542,60 @@
       width: 460
     });
   };
+
+  // --- MANAGER SUMMARY (visits the team logged on a given day - Manager/admin only,
+  // the sidebar tab and view container are already gated server-side via Jinja) ---
+  let summaryDate = null; // 'YYYY-MM-DD', defaults to today on first load
+
+  function loadManagerSummary() {
+    if (summaryDate === null) summaryDate = new Date().toISOString().slice(0, 10);
+    Swal.fire({ title: 'Loading summary...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
+    google.script.run
+      .withSuccessHandler(data => { Swal.close(); renderManagerSummary(data); })
+      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .getManagerSummary(summaryDate);
+  }
+
+  window.summaryShiftDay = function(delta) {
+    const d = new Date(summaryDate + 'T00:00:00');
+    d.setDate(d.getDate() + delta);
+    summaryDate = d.toISOString().slice(0, 10);
+    loadManagerSummary();
+  };
+
+  window.summaryGoToday = function() {
+    summaryDate = new Date().toISOString().slice(0, 10);
+    loadManagerSummary();
+  };
+
+  function renderManagerSummary(data) {
+    document.getElementById('summaryTitle').textContent =
+      new Date(data.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+    const reps = data.repBreakdown || [];
+    document.getElementById('summaryRepCount').textContent = reps.length;
+    document.getElementById('summaryRepBreakdown').innerHTML = reps.length === 0
+      ? '<p class="home-empty">No visits logged yet.</p>'
+      : reps.map(r => `
+        <div class="home-row">
+          <div class="home-row-main">${escapeHtml(r.rep)}</div>
+          <span class="home-row-meta">${r.count} visit${r.count === 1 ? '' : 's'}</span>
+        </div>`).join('');
+
+    const visits = data.visits || [];
+    document.getElementById('summaryVisitCount').textContent = data.count;
+    document.getElementById('summaryVisitList').innerHTML = visits.length === 0
+      ? '<p class="home-empty">No visits logged on this day.</p>'
+      : visits.map(v => `
+        <div class="home-row home-row-clickable" onclick="jumpToTaskEntity('${escapeHtml(v.entityType)}', '${escapeHtml(v.entityId)}')" title="${escapeHtml(v.notes || 'No notes')}">
+          <div class="home-row-main">
+            <span>${escapeHtml(v.entityLabel)}</span>
+            <span class="home-tag">${escapeHtml(v.entityType)}</span>
+            <span class="home-tag">${escapeHtml(v.rep)}</span>
+          </div>
+          <span class="home-row-meta">${escapeHtml(v.time)}</span>
+        </div>`).join('');
+  }
 
   // Attachments follow a Lead when it's converted to a Deal (the backend re-keys them),
   // but there was previously no menu item on Deal cards to reach them again - this is

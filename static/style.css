@@ -118,6 +118,23 @@
     flex-shrink: 0;
   }
 
+  .nav-badge {
+    margin-left: auto;
+    background-color: var(--color-danger);
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    border-radius: 9px;
+    padding: 3px 7px;
+    flex-shrink: 0;
+  }
+
+  .sidebar-nav li.active .nav-badge {
+    background-color: #ffffff;
+    color: var(--color-brand);
+  }
+
   .nav-icon svg {
     width: 100%;
     height: 100%;

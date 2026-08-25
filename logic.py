@@ -30,7 +30,7 @@ DEFAULT_HEADERS = {
     "Accounts": ["Account ID", "Account Name", "Sales Rep", "Territory", "Last Visit", "Visit Count", "Number", "Created Time"],
     "Deals": ["Deal ID", "Deal Name", "Account", "Amount", "Stage", "Sales Rep", "Territory", "Next Follow-up", "Created Time", "Closed Date", "Lost Reason"],
     "Attachments": ["Attachment ID", "Entity Type", "Entity ID", "File Name", "Mime Type", "Size", "Drive File ID", "Drive File URL", "Uploaded Time"],
-    "Visits": ["Visit ID", "Account ID", "Account Name", "Visit Date", "Notes", "Logged Time"],
+    "Visits": ["Visit ID", "Entity Type", "Entity ID", "Entity Label", "Account ID", "Account Name", "Visit Date", "Notes", "Logged Time"],
     "Products": ["Product ID", "Product Name", "SKU", "Unit Price", "Description"],
     "DealLineItems": ["Line Item ID", "Deal ID", "Product ID", "Product Name", "Quantity", "Unit Price", "Line Total"],
     "Tasks": ["Task ID", "Entity Type", "Entity ID", "Entity Label", "Title", "Due Date", "Owner", "Done", "Created Time"],
@@ -64,12 +64,15 @@ def _to_ms(v):
 
 
 def _viewer_context():
-    """(is_admin, own_rep, visible_reps) for the currently logged-in session. own_rep is
-    this account's own Sales Rep Name (used when tagging something as created by them,
-    e.g. a Task's Owner). visible_reps is the full set of names their non-admin view is
-    scoped to: just [own_rep] for a plain rep, or own_rep plus their configured "managed"
-    team for a Manager account (own_rep may be blank for a Manager who doesn't
-    personally carry a rep name, in which case it's just their team).
+    """(is_admin, own_rep, visible_reps, is_manager) for the currently logged-in
+    session. own_rep is this account's own Sales Rep Name (used when tagging something
+    as created by them, e.g. a Task's Owner). visible_reps is the full set of names
+    their non-admin view is scoped to: just [own_rep] for a plain rep, or own_rep plus
+    their configured "managed" team for a Manager account (own_rep may be blank for a
+    Manager who doesn't personally carry a rep name, in which case it's just their
+    team). is_manager is True whenever "Manages" is configured at all - distinct from
+    "visible_reps is non-empty", which a plain rep with just their own name also has -
+    so callers can tell a Manager apart from a plain rep even when scoping the same way.
 
     Reads Flask's session directly rather than threading a parameter through every
     function's signature - every function here always runs inside a request via the
@@ -87,7 +90,7 @@ def _viewer_context():
         if key not in seen:
             seen.add(key)
             visible_reps.append(name)
-    return is_admin, own_rep, visible_reps
+    return is_admin, own_rep, visible_reps, bool(managed)
 
 
 def _owned_by_viewer(row, rep_col_index, scoped, visible_reps):
@@ -330,9 +333,12 @@ def getSheetData(sheetName):
     # Manager) in "Sales Rep" - applies automatically to whichever sheet actually has
     # that column (Leads/Contacts/Accounts/Deals today), and to nothing else (e.g.
     # Visits, Attachments, Users, any custom sheet without it), since there's no
-    # ownership signal to check there.
-    is_admin, _, visible_reps = _viewer_context()
-    if not is_admin and visible_reps and "Sales Rep" in header_values:
+    # ownership signal to check there. Exception: a Manager sees every Lead and every
+    # Account regardless of team (oversight/reassignment needs full visibility there),
+    # even though everywhere else they're still scoped to just their own team.
+    is_admin, _, visible_reps, is_manager = _viewer_context()
+    manager_sees_all = is_manager and sheetName in ("Leads", "Accounts")
+    if not is_admin and not manager_sees_all and visible_reps and "Sales Rep" in header_values:
         rep_i = header_values.index("Sales Rep")
         rows = [r for r in rows if _owned_by_viewer(r, rep_i, True, visible_reps)]
 
@@ -346,7 +352,11 @@ def addRecordData(sheetName, rowData):
     headers = sheets.header_row(ws)
     for h in headers:
         key = h.strip()
-        if key in KNOWN_ID_COLUMNS and not rowData.get(key):
+        # Only mint a fresh ID when the caller didn't address this field at all - an
+        # explicit "" (e.g. a foreign-key-style column like "Account ID" on Visits,
+        # deliberately left blank for a visit logged against something else) must be
+        # respected as intentionally blank, not treated as "needs one invented."
+        if key in KNOWN_ID_COLUMNS and key not in rowData:
             rowData[key] = _uid(KNOWN_ID_COLUMNS[key])
     new_row = [rowData.get(h) if rowData.get(h) not in (None,) else "" for h in headers]
     new_row = [("" if v is None or v == "" else v) for v in new_row]
@@ -512,6 +522,20 @@ def parseVisitDate_(s):
     return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
 
 
+def ensureVisitsSchema_():
+    ws = sheets.get_worksheet("Visits")
+    if ws is None:
+        ws = sheets.ensure_worksheet("Visits", DEFAULT_HEADERS["Visits"])
+    headers = sheets.header_row(ws)
+    missing = [c for c in ["Entity Type", "Entity ID", "Entity Label"] if c not in headers]
+    if missing:
+        _append_missing_headers(ws, headers, missing)
+    return ws
+
+
+VISIT_ENTITY_SHEETS = {"Account": ("Accounts", "Account ID"), "Lead": ("Leads", "Lead ID")}
+
+
 def recomputeAccountVisitStats_(accountId):
     visits_ws = sheets.get_worksheet("Visits")
     acc_ws = ensureAccountsVisitColumns_()
@@ -541,51 +565,108 @@ def recomputeAccountVisitStats_(accountId):
         sheets.update_cell(acc_ws, acc_row, acc_headers.index("Visit Count") + 1, count)
 
 
-def logVisit(accountId, visitDate, notes):
-    acc_ws = sheets.get_worksheet("Accounts")
-    if acc_ws is None:
-        raise Exception("Accounts data isn't available right now - contact your admin.")
-    acc_row = findRowByIdColumn_(acc_ws, "Account ID", accountId)
-    if acc_row == -1:
-        raise Exception("Account not found: " + str(accountId))
-    headers = sheets.header_row(acc_ws)
-    account_name = ""
-    if "Account Name" in headers:
-        account_name = acc_ws.cell(acc_row, headers.index("Account Name") + 1).value or ""
+def _recomputeLeadLastVisit(leadId):
+    """Mirrors recomputeAccountVisitStats_ for Leads, but only touches "Date of Last
+    Visit" if that column already exists on this Leads sheet - it isn't one of
+    DEFAULT_HEADERS, just a column some Leads sheets already carry from an import."""
+    lead_ws = sheets.get_worksheet("Leads")
+    if lead_ws is None:
+        return
+    lead_headers = sheets.header_row(lead_ws)
+    if "Date of Last Visit" not in lead_headers:
+        return
+    visits_ws = sheets.get_worksheet("Visits")
+    last_ms = None
+    if visits_ws is not None:
+        headers, rows = _read(visits_ws)
+        idx = {h: i for i, h in enumerate(headers)}
+        if "Entity Type" in idx and "Entity ID" in idx and "Visit Date" in idx:
+            for r in rows:
+                if idx["Entity Type"] < len(r) and r[idx["Entity Type"]] == "Lead" \
+                        and idx["Entity ID"] < len(r) and str(r[idx["Entity ID"]]) == str(leadId):
+                    ms = _to_ms(r[idx["Visit Date"]]) if idx["Visit Date"] < len(r) else None
+                    if ms is not None and (last_ms is None or ms > last_ms):
+                        last_ms = ms
+    lead_row = findRowByIdColumn_(lead_ws, "Lead ID", leadId)
+    if lead_row == -1:
+        return
+    val = datetime.fromtimestamp(last_ms / 1000).strftime("%Y-%m-%d") if last_ms else ""
+    sheets.update_cell(lead_ws, lead_row, lead_headers.index("Date of Last Visit") + 1, val)
 
-    getSheetData("Visits")
-    addRecordData("Visits", {
+
+def logVisit(entityType, entityId, entityLabel, visitDate, notes):
+    if entityType not in VISIT_ENTITY_SHEETS:
+        raise Exception("Invalid entity type: " + str(entityType))
+    entity_sheet, id_col = VISIT_ENTITY_SHEETS[entityType]
+    ews = sheets.get_worksheet(entity_sheet)
+    if ews is None or findRowByIdColumn_(ews, id_col, entityId) == -1:
+        raise Exception("%s not found: %s" % (entityType, entityId))
+
+    ensureVisitsSchema_()
+    row_data = {
         "Visit ID": _uid("VIS"),
-        "Account ID": accountId,
-        "Account Name": account_name,
+        "Entity Type": entityType,
+        "Entity ID": entityId,
+        "Entity Label": entityLabel or "",
         "Visit Date": parseVisitDate_(visitDate),
         "Notes": notes or "",
         "Logged Time": _now_str(),
-    })
-    recomputeAccountVisitStats_(accountId)
-    return getSheetData("Accounts")
+    }
+    if entityType == "Account":
+        # Legacy columns, kept in sync so the existing Account-specific visit
+        # tracking (Home overdue-visits, Analytics visit counts, and the "Last
+        # Visit"/"Visit Count" fields on the Account row itself) keeps working
+        # unchanged - none of that code needs to know Entity Type exists.
+        row_data["Account ID"] = entityId
+        row_data["Account Name"] = entityLabel or ""
+    else:
+        # Explicitly blank, not omitted - "Account ID" is a known-ID column, and
+        # addRecordData mints a fresh id for any such column the caller doesn't
+        # address at all. Leaving it out entirely would silently attach a random,
+        # meaningless Account ID to a Lead visit.
+        row_data["Account ID"] = ""
+        row_data["Account Name"] = ""
+    addRecordData("Visits", row_data)
+
+    if entityType == "Account":
+        recomputeAccountVisitStats_(entityId)
+        return getSheetData("Accounts")
+    _recomputeLeadLastVisit(entityId)
+    return getSheetData("Leads")
 
 
-def listVisits(accountId):
+def listVisits(entityType, entityId):
     ws = sheets.get_worksheet("Visits")
     if ws is None:
         return []
     headers, rows = _read(ws)
-    if not rows or "Account ID" not in headers:
+    if not rows:
         return []
     idx = {h: i for i, h in enumerate(headers)}
     results = []
     for r in rows:
-        if str(r[idx["Account ID"]]) == str(accountId):
-            ms = _to_ms(r[idx["Visit Date"]]) if "Visit Date" in idx and idx["Visit Date"] < len(r) else None
-            results.append({
-                "visitId": r[idx["Visit ID"]] if "Visit ID" in idx else "",
-                "visitDate": datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d") if ms else "",
-                "visitDateSort": ms or 0,
-                "notes": r[idx["Notes"]] if "Notes" in idx and idx["Notes"] < len(r) else "",
-            })
-    results.sort(key=lambda x: x["visitDateSort"], reverse=True)
-    return results
+        has_entity_type = "Entity Type" in idx and idx["Entity Type"] < len(r) and r[idx["Entity Type"]]
+        if has_entity_type:
+            matches = (str(r[idx["Entity Type"]]) == entityType
+                       and "Entity ID" in idx and idx["Entity ID"] < len(r)
+                       and str(r[idx["Entity ID"]]) == str(entityId))
+        elif entityType == "Account":
+            # Legacy rows logged before Entity Type existed - Account is all there was.
+            matches = "Account ID" in idx and idx["Account ID"] < len(r) and str(r[idx["Account ID"]]) == str(entityId)
+        else:
+            matches = False
+        if not matches:
+            continue
+        ms = _to_ms(r[idx["Visit Date"]]) if "Visit Date" in idx and idx["Visit Date"] < len(r) else None
+        results.append((ms, {
+            "visitId": r[idx["Visit ID"]] if "Visit ID" in idx else "",
+            "visitDate": datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d") if ms else "",
+            "notes": r[idx["Notes"]] if "Notes" in idx and idx["Notes"] < len(r) else "",
+        }))
+    # Sort newest-first server-side, then drop the sort key before returning - same
+    # reasoning as Tasks: keep any None/placeholder sort value out of the JSON payload.
+    results.sort(key=lambda x: x[0] if x[0] is not None else -1, reverse=True)
+    return [r[1] for r in results]
 
 
 def deleteVisit(visitId):
@@ -596,10 +677,18 @@ def deleteVisit(visitId):
     if row_num == -1:
         raise Exception("Visit not found: " + str(visitId))
     headers = sheets.header_row(ws)
-    account_id = ws.cell(row_num, headers.index("Account ID") + 1).value
+    entity_type = ws.cell(row_num, headers.index("Entity Type") + 1).value if "Entity Type" in headers else ""
+    entity_id = ws.cell(row_num, headers.index("Entity ID") + 1).value if "Entity Type" in headers else ""
+    if not entity_type:
+        # Legacy row logged before Entity Type existed - it can only be an Account visit.
+        entity_type = "Account"
+        entity_id = ws.cell(row_num, headers.index("Account ID") + 1).value if "Account ID" in headers else ""
     sheets.delete_row(ws, row_num)
-    recomputeAccountVisitStats_(account_id)
-    return listVisits(account_id)
+    if entity_type == "Account":
+        recomputeAccountVisitStats_(entity_id)
+    else:
+        _recomputeLeadLastVisit(entity_id)
+    return listVisits(entity_type, entity_id)
 
 
 # ---- Deal Line Items (Products priced onto a Deal) ----
@@ -745,7 +834,7 @@ def addTask(entityType, entityId, entityLabel, title, dueDate):
     if ews is None or findRowByIdColumn_(ews, id_col, entityId) == -1:
         raise Exception("%s not found: %s" % (entityType, entityId))
 
-    _, own_rep, _ = _viewer_context()
+    _, own_rep, _, _ = _viewer_context()
 
     getSheetData("Tasks")  # self-heals the sheet into existence via DEFAULT_HEADERS
     addRecordData("Tasks", {
@@ -800,7 +889,7 @@ def listMyTasks():
     if not rows:
         return []
     idx = {h: i for i, h in enumerate(headers)}
-    is_admin, _, visible_reps = _viewer_context()
+    is_admin, _, visible_reps, _ = _viewer_context()
     results = []
     for r in rows:
         owner = r[idx["Owner"]] if "Owner" in idx and idx["Owner"] < len(r) else ""
@@ -1165,7 +1254,7 @@ def getHomeData():
     # Non-admins only see the widgets built from their own Sales-Rep-attributed data -
     # same rule as getSheetData, applied here per-section since Home aggregates across
     # several sheets rather than returning one table.
-    is_admin, _, visible_reps = _viewer_context()
+    is_admin, _, visible_reps, _ = _viewer_context()
     scoped = (not is_admin) and bool(visible_reps)
 
     def fmt(ms):
@@ -1335,7 +1424,7 @@ def getHomeData():
 # the client buckets by day and paginates by month) ----
 
 def getCalendarEvents():
-    is_admin, _, visible_reps = _viewer_context()
+    is_admin, _, visible_reps, _ = _viewer_context()
     scoped = (not is_admin) and bool(visible_reps)
     events = []
 
@@ -1376,8 +1465,9 @@ def getCalendarEvents():
             events.append({"date": fmt(fu), "kind": "Deal Follow-up", "title": nm,
                            "entityType": "Deal", "entityId": deal_id, "done": False})
 
-    # Visits are scoped by the Account they were logged against (a Visit carries no
-    # Sales Rep of its own) - same ownership lookup getHomeData already builds.
+    # Visits are scoped by the Account/Lead they were logged against (a Visit carries
+    # no Sales Rep of its own) - same ownership lookup getHomeData already builds for
+    # Accounts; Leads gets an equivalent set built here.
     ensureAccountsVisitColumns_()
     acc_ws = sheets.get_worksheet("Accounts")
     acc_headers, acc_rows = _read(acc_ws) if acc_ws is not None else ([], [])
@@ -1394,20 +1484,41 @@ def getCalendarEvents():
                     if aid:
                         owned_account_ids.add(aid)
 
+    owned_lead_ids = None
+    if scoped and leads_ws is not None:
+        lead_c = {h: i for i, h in enumerate(sheets.header_row(leads_ws))}
+        lid_i = lead_c.get("Lead ID")
+        lead_rep_i = lead_c.get("Sales Rep")
+        if lid_i is not None:
+            owned_lead_ids = set()
+            _, lead_rows = _read(leads_ws)
+            for row in lead_rows:
+                if _owned_by_viewer(row, lead_rep_i, scoped, visible_reps):
+                    lid = row[lid_i] if lid_i < len(row) else None
+                    if lid:
+                        owned_lead_ids.add(lid)
+
     visits_ws = sheets.get_worksheet("Visits")
     if visits_ws is not None:
         headers, rows = _read(visits_ws)
         c = {h: i for i, h in enumerate(headers)}
         for row in rows:
-            acc = row[c["Account ID"]] if "Account ID" in c and c["Account ID"] < len(row) else None
-            if owned_account_ids is not None and acc not in owned_account_ids:
-                continue
+            entity_type = row[c["Entity Type"]] if "Entity Type" in c and c["Entity Type"] < len(row) and row[c["Entity Type"]] else "Account"
+            if entity_type == "Account":
+                entity_id = row[c["Account ID"]] if "Account ID" in c and c["Account ID"] < len(row) else None
+                if owned_account_ids is not None and entity_id not in owned_account_ids:
+                    continue
+                nm = row[c["Account Name"]] if "Account Name" in c and c["Account Name"] < len(row) else "Visit"
+            else:
+                entity_id = row[c["Entity ID"]] if "Entity ID" in c and c["Entity ID"] < len(row) else None
+                if owned_lead_ids is not None and entity_id not in owned_lead_ids:
+                    continue
+                nm = row[c["Entity Label"]] if "Entity Label" in c and c["Entity Label"] < len(row) else "Visit"
             ms = _to_ms(row[c["Visit Date"]]) if "Visit Date" in c and c["Visit Date"] < len(row) else None
             if ms is None:
                 continue
-            nm = row[c["Account Name"]] if "Account Name" in c and c["Account Name"] < len(row) else "Visit"
             events.append({"date": fmt(ms), "kind": "Visit", "title": nm,
-                           "entityType": "Account", "entityId": acc, "done": True})
+                           "entityType": entity_type, "entityId": entity_id, "done": True})
 
     tasks_ws = sheets.get_worksheet("Tasks")
     if tasks_ws is not None:
@@ -1429,6 +1540,89 @@ def getCalendarEvents():
 
     events.sort(key=lambda e: e["date"])
     return events
+
+
+# ---- Manager Summary (visits logged on a given day, across a team) ----
+
+def getManagerSummary(dateStr=None):
+    is_admin, _, visible_reps, _ = _viewer_context()
+    scoped = (not is_admin) and bool(visible_reps)
+
+    if dateStr:
+        day_ms = _to_ms(dateStr)
+        day = datetime.fromtimestamp(day_ms / 1000) if day_ms is not None else datetime.now()
+    else:
+        day = datetime.now()
+    day_start = int(datetime(day.year, day.month, day.day).timestamp() * 1000)
+    day_end = day_start + DAY_MS - 1
+
+    # A Visit doesn't record who logged it - attribute it to the Sales Rep on the
+    # Account/Lead it was logged against, same as everywhere else infers ownership.
+    def rep_map(sheet_name, id_col):
+        m = {}
+        ws = sheets.get_worksheet(sheet_name)
+        if ws is not None:
+            headers, rows = _read(ws)
+            c = {h: i for i, h in enumerate(headers)}
+            id_i = c.get(id_col)
+            rep_i = c.get("Sales Rep")
+            if id_i is not None:
+                for row in rows:
+                    rid = row[id_i] if id_i < len(row) else None
+                    if rid:
+                        m[rid] = _norm(row[rep_i]) if rep_i is not None and rep_i < len(row) else ""
+        return m
+
+    acc_rep_by_id = rep_map("Accounts", "Account ID")
+    lead_rep_by_id = rep_map("Leads", "Lead ID")
+
+    visits = []
+    by_rep = {}
+    ws = sheets.get_worksheet("Visits")
+    if ws is not None:
+        headers, rows = _read(ws)
+        idx = {h: i for i, h in enumerate(headers)}
+        for r in rows:
+            ms = _to_ms(r[idx["Visit Date"]]) if "Visit Date" in idx and idx["Visit Date"] < len(r) else None
+            if ms is None or not (day_start <= ms <= day_end):
+                continue
+            entity_type = r[idx["Entity Type"]] if "Entity Type" in idx and idx["Entity Type"] < len(r) and r[idx["Entity Type"]] else "Account"
+            if entity_type == "Account":
+                entity_id = r[idx["Account ID"]] if "Account ID" in idx and idx["Account ID"] < len(r) else None
+                entity_label = r[idx["Account Name"]] if "Account Name" in idx and idx["Account Name"] < len(r) else ""
+                rep = acc_rep_by_id.get(entity_id, "")
+            else:
+                entity_id = r[idx["Entity ID"]] if "Entity ID" in idx and idx["Entity ID"] < len(r) else None
+                entity_label = r[idx["Entity Label"]] if "Entity Label" in idx and idx["Entity Label"] < len(r) else ""
+                rep = lead_rep_by_id.get(entity_id, "")
+            if scoped and not any(rep.lower() == vr.lower() for vr in visible_reps):
+                continue
+            notes = r[idx["Notes"]] if "Notes" in idx and idx["Notes"] < len(r) else ""
+            rep_label = rep or "(Unassigned)"
+            # "Visit Date" is date-only (it decides which day this belongs to, and can be
+            # backdated), so it's always midnight - the actual time-of-day for display
+            # comes from "Logged Time" instead, when a rep logged it just now for today.
+            logged_ms = _to_ms(r[idx["Logged Time"]]) if "Logged Time" in idx and idx["Logged Time"] < len(r) else None
+            time_label = datetime.fromtimestamp(logged_ms / 1000).strftime("%I:%M %p") if logged_ms else ""
+            # Sort by when it was actually logged (falls back to the visit date itself,
+            # e.g. for a legacy row with no Logged Time) so same-day entries land in a
+            # sensible order instead of all tying at midnight.
+            visits.append((logged_ms if logged_ms is not None else ms, {
+                "entityType": entity_type, "entityId": entity_id, "entityLabel": entity_label,
+                "rep": rep_label, "notes": notes,
+                "time": time_label,
+            }))
+            by_rep[rep_label] = by_rep.get(rep_label, 0) + 1
+
+    visits.sort(key=lambda x: x[0])
+    rep_breakdown = sorted(({"rep": k, "count": v} for k, v in by_rep.items()), key=lambda x: x["count"], reverse=True)
+
+    return {
+        "date": day.strftime("%Y-%m-%d"),
+        "count": len(visits),
+        "visits": [v[1] for v in visits],
+        "repBreakdown": rep_breakdown,
+    }
 
 
 # ---- Duplicate detect & merge ----
@@ -1499,12 +1693,19 @@ def _repoint_visits_account(old_acc_id, new_acc_id, new_acc_name):
         return
     id_i = headers.index("Account ID")
     name_i = headers.index("Account Name") if "Account Name" in headers else -1
+    eid_i = headers.index("Entity ID") if "Entity ID" in headers else -1
+    elabel_i = headers.index("Entity Label") if "Entity Label" in headers else -1
     changed = False
     for i, r in enumerate(rows):
         if id_i < len(r) and str(r[id_i]) == str(old_acc_id):
             sheets.update_cell(ws, i + 2, id_i + 1, new_acc_id)
             if name_i > -1:
                 sheets.update_cell(ws, i + 2, name_i + 1, new_acc_name)
+            # Keep the generic Entity ID/Label columns in sync too, for the same rows.
+            if eid_i > -1:
+                sheets.update_cell(ws, i + 2, eid_i + 1, new_acc_id)
+            if elabel_i > -1:
+                sheets.update_cell(ws, i + 2, elabel_i + 1, new_acc_name)
             changed = True
     return changed
 
@@ -1590,7 +1791,7 @@ def getAnalyticsData(opts=None):
     # by tampering with the request - if they asked for a rep outside that set, ignore
     # it rather than hide the dropdown option, so seg_match's own scoping below is what
     # actually enforces the boundary. Leaving it blank means "show my whole team".
-    is_admin, _, visible_reps = _viewer_context()
+    is_admin, _, visible_reps, _ = _viewer_context()
     scoped_reps = (not is_admin) and bool(visible_reps)
     if scoped_reps and rep_filter and not any(rep_filter.lower() == r.lower() for r in visible_reps):
         rep_filter = ""

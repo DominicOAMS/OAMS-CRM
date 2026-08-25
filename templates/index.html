@@ -37,6 +37,7 @@
       <li id="nav-MyTasks" onclick="switchTab('MyTasks')" title="My Tasks: to-dos you've added on Leads, Contacts, Accounts, or Deals.">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="4.5" width="15" height="15" rx="2"/><path d="m8.5 12 2.3 2.3 4.7-4.6"/></svg></span>
         <span class="nav-label">My Tasks</span>
+        <span class="nav-badge" id="myTasksNavBadge" style="display:none;">0</span>
       </li>
       <li id="nav-Calendar" onclick="switchTab('Calendar')" title="Calendar: Lead/Deal follow-ups, logged visits, and task due dates by day.">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg></span>
@@ -70,6 +71,12 @@
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5a1.5 1.5 0 0 1 1.5-1.5h3.2a1.5 1.5 0 0 1 1.1.5l1.2 1.3H18.5A1.5 1.5 0 0 1 20 8.3V17.5A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5Z"/></svg></span>
         <span class="nav-label">Documents</span>
       </li>
+      {% if is_admin or is_manager %}
+      <li id="nav-Summary" onclick="switchTab('Summary')" title="Summary: visits your team logged today.">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5h16M4 12h16M4 18.5h10"/></svg></span>
+        <span class="nav-label">Summary</span>
+      </li>
+      {% endif %}
       {% if is_admin %}
       <li id="nav-Users" onclick="switchTab('Users')">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c0-3.4 2.6-5.6 5.5-5.6s5.5 2.2 5.5 5.6"/><path d="M15.5 8.5a3 3 0 1 1 0 6M17.5 13.9c1.8.4 3 1.7 3 3.6v1.5"/></svg></span>
@@ -248,6 +255,29 @@
         <div class="doc-grid" id="docGrid"></div>
       </div>
 
+      {% if is_admin or is_manager %}
+      <div class="summary-view" id="summaryView" style="display:none;">
+        <div class="calendar-header">
+          <div class="calendar-title" id="summaryTitle">Today's Visits</div>
+          <div class="calendar-nav">
+            <button class="btn btn-secondary" onclick="summaryShiftDay(-1)">‹ Prev Day</button>
+            <button class="btn btn-secondary" onclick="summaryGoToday()">Today</button>
+            <button class="btn btn-secondary" onclick="summaryShiftDay(1)">Next Day ›</button>
+          </div>
+        </div>
+        <div class="home-grid">
+          <div class="chart-card home-card" style="grid-column: 1 / -1;">
+            <h3>Visits by rep <span class="home-count" id="summaryRepCount">0</span></h3>
+            <div id="summaryRepBreakdown"></div>
+          </div>
+          <div class="chart-card home-card" style="grid-column: 1 / -1;">
+            <h3>Visit log <span class="home-count" id="summaryVisitCount">0</span></h3>
+            <div id="summaryVisitList"></div>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
       {% if is_admin %}
       <div class="users-view" id="usersView" style="display:none;">
         <div class="table-scroll">
@@ -356,6 +386,7 @@
     // rep filter to "just me" for a non-admin (the actual restriction is enforced
     // server-side in getAnalyticsData/getSheetData regardless of this flag).
     window.isAdmin = {{ is_admin|tojson }};
+    window.isManager = {{ is_manager|tojson }};
   </script>
   <script src="/static/script.js"></script>
 </body>

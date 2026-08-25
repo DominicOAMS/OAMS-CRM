@@ -104,6 +104,28 @@ def _owned_by_viewer(row, rep_col_index, scoped, visible_reps):
     return any(v == name.lower() for name in visible_reps)
 
 
+def _owned_account_names_lower(visible_reps):
+    """Lowercased Account Names belonging to any of visible_reps - used to let a
+    Contact inherit visibility from the Account it's linked to, for Contacts sheets
+    where the Contact's own "Sales Rep" wasn't set (e.g. created before that column
+    was populated on conversion) or don't carry that column at all."""
+    names = set()
+    acc_ws = sheets.get_worksheet("Accounts")
+    if acc_ws is None:
+        return names
+    headers, rows = _read(acc_ws)
+    c = {h: i for i, h in enumerate(headers)}
+    if "Account Name" not in c or "Sales Rep" not in c:
+        return names
+    name_i, rep_i = c["Account Name"], c["Sales Rep"]
+    for row in rows:
+        if _owned_by_viewer(row, rep_i, True, visible_reps):
+            nm = row[name_i] if name_i < len(row) else ""
+            if nm:
+                names.add(_norm(nm).lower())
+    return names
+
+
 def _next_birthday(dob_ms, today):
     """Days until the next occurrence of a stored birth date's month/day, plus that
     date itself - the birth YEAR only matters for parsing, recurrence is annual."""
@@ -338,9 +360,32 @@ def getSheetData(sheetName):
     # even though everywhere else they're still scoped to just their own team.
     is_admin, _, visible_reps, is_manager = _viewer_context()
     manager_sees_all = is_manager and sheetName in ("Leads", "Accounts")
-    if not is_admin and not manager_sees_all and visible_reps and "Sales Rep" in header_values:
-        rep_i = header_values.index("Sales Rep")
-        rows = [r for r in rows if _owned_by_viewer(r, rep_i, True, visible_reps)]
+    if not is_admin and not manager_sees_all and visible_reps:
+        if sheetName == "Contacts":
+            # A Contact belongs to whichever Account it's linked to, and that's true
+            # regardless of whether the Contact's own "Sales Rep" happens to be set -
+            # so it's checked (when present) OR inherited from the linked Account,
+            # not only the former. Without this, a Contact whose own field was never
+            # populated (e.g. from before Lead conversion started copying it) was
+            # invisible to the very rep who owns the Account it's under.
+            rep_i = header_values.index("Sales Rep") if "Sales Rep" in header_values else None
+            link_col = next((c for c in ("Account", "Account Name") if c in header_values), None)
+            link_i = header_values.index(link_col) if link_col else None
+            owned_account_names = _owned_account_names_lower(visible_reps) if link_i is not None else set()
+
+            def _contact_owned(r):
+                if rep_i is not None and _owned_by_viewer(r, rep_i, True, visible_reps):
+                    return True
+                if link_i is not None and link_i < len(r):
+                    nm = _norm(_strip_link(r[link_i])).lower()
+                    if nm and nm in owned_account_names:
+                        return True
+                return False
+
+            rows = [r for r in rows if _contact_owned(r)]
+        elif "Sales Rep" in header_values:
+            rep_i = header_values.index("Sales Rep")
+            rows = [r for r in rows if _owned_by_viewer(r, rep_i, True, visible_reps)]
 
     return {"columns": columns, "rows": rows}
 
@@ -467,6 +512,12 @@ def convertLeadToAccount(rowIndex):
     getSheetData("Contacts")
     contact_row = {
         "Contact ID": contact_id, "Email": email, "Phone": phone, "Created Time": timestamp,
+        # Same Sales Rep as the Account/Deal just created from this Lead - without
+        # this, a Contact born from Lead conversion had a blank Sales Rep and was
+        # invisible to the very rep whose lead it came from (only ever mattered on a
+        # Contacts sheet that has its own Sales Rep column - addRecordData silently
+        # drops keys with no matching column on sheets that don't).
+        "Sales Rep": sales_rep,
     }
     _set_contact_account_link(contact_row, account_link)
     _set_contact_name(contact_row, name, lead_first, lead_last)
@@ -498,11 +549,18 @@ def addContactToAccount(accountId, contactFields):
     account_name = "Unknown Account"
     if "Account Name" in headers:
         account_name = acc_ws.cell(row_num, headers.index("Account Name") + 1).value or "Unknown Account"
+    account_rep = ""
+    if "Sales Rep" in headers:
+        account_rep = acc_ws.cell(row_num, headers.index("Sales Rep") + 1).value or ""
 
     row_data = dict(contactFields or {})
     row_data.update({
         "Contact ID": _uid("CON"),
         "Created Time": _now_str(),
+        # Inherit the parent Account's Sales Rep (same reasoning as convertLeadToAccount)
+        # - only matters on a Contacts sheet that actually has this column; ignored
+        # otherwise. A field the caller explicitly sent takes priority over this.
+        "Sales Rep": (contactFields or {}).get("Sales Rep") or account_rep,
     })
     _set_contact_account_link(row_data, account_name)
     return addRecordData("Contacts", row_data)

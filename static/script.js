@@ -2222,10 +2222,10 @@
     return tasks.map(t => {
       const isOverdue = !t.done && t.dueDate && t.dueDate < todayIso;
       return `
-      <div style="display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid #e1e5eb; text-align:left;">
-        <input type="checkbox" ${t.done ? 'checked' : ''} onchange="submitToggleTaskDone('${escapeHtml(t.taskId)}')" style="flex-shrink:0; width:16px; height:16px; cursor:pointer;">
+      <div class="task-row" data-task-id="${escapeHtml(t.taskId)}" style="display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid #e1e5eb; text-align:left;">
+        <input type="checkbox" ${t.done ? 'checked' : ''} onchange="submitToggleTaskDone(event, '${escapeHtml(t.taskId)}')" style="flex-shrink:0; width:16px; height:16px; cursor:pointer;">
         <div style="min-width:0; flex:1;">
-          <div style="font-size:13px; font-weight:700; color:${t.done ? '#a0aabf' : '#11141a'}; ${t.done ? 'text-decoration:line-through;' : ''}">${escapeHtml(t.title)}</div>
+          <div class="task-row-title" style="font-size:13px; font-weight:700; color:${t.done ? '#a0aabf' : '#11141a'}; ${t.done ? 'text-decoration:line-through;' : ''}">${escapeHtml(t.title)}</div>
           ${t.dueDate ? `<div style="font-size:12px; color:${isOverdue ? '#d93025' : '#5c6673'};">Due ${escapeHtml(t.dueDate)}</div>` : ''}
         </div>
         <button class="btn btn-secondary btn-danger-outline" style="padding:4px 10px; font-size:12px; flex-shrink:0;" onclick="promptDeleteTask('${escapeHtml(t.taskId)}')">Delete</button>
@@ -2281,13 +2281,34 @@
       .addTask(currentTasksContext.entityType, currentTasksContext.entityId, currentTasksContext.entityLabel, title, due);
   };
 
-  window.submitToggleTaskDone = function(taskId) {
+  // Optimistic: flips the checkbox's own row instantly (no loading modal - swal.js
+  // hides a loading overlay for the first 400ms to avoid flashing on fast actions,
+  // which made this feel broken instead: click, a beat of nothing, then it "works").
+  // Reverts in place if the server call actually fails.
+  window.submitToggleTaskDone = function(e, taskId) {
+    const cb = e.target;
+    const nowDone = cb.checked;
+    const row = cb.closest('.task-row');
+    const titleEl = row ? row.querySelector('.task-row-title') : null;
+    const setDoneStyle = done => {
+      if (!titleEl) return;
+      titleEl.style.color = done ? '#a0aabf' : '#11141a';
+      titleEl.style.textDecoration = done ? 'line-through' : 'none';
+    };
+    setDoneStyle(nowDone);
     google.script.run
-      .withSuccessHandler(tasks => { tasksChanged = true; showTasksModal(tasks); refreshTaskBadge(); })
-      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .withSuccessHandler(tasks => { tasksChanged = true; currentTasksCache = tasks || []; refreshTaskBadge(); })
+      .withFailureHandler(err => {
+        cb.checked = !nowDone;
+        setDoneStyle(!nowDone);
+        Swal.fire('Error', err.message, 'error');
+      })
       .toggleTaskDone(taskId);
   };
 
+  // Optimistic delete: the row is gone from the modal the instant it's confirmed:
+  // reopening the modal via showTasksModal with it pre-filtered out is indistinguishable
+  // from a real re-render, and avoids the same loading-modal stutter as the toggle above.
   window.promptDeleteTask = function(taskId) {
     Swal.fire({
       title: 'Delete this task?',
@@ -2297,13 +2318,14 @@
       heightAuto: false,
       scrollbarPadding: false
     }).then(result => {
-      if (result.isConfirmed) {
-        Swal.fire({ title: 'Deleting...', allowOutsideClick: false, heightAuto: false, scrollbarPadding: false, didOpen: () => Swal.showLoading() });
-        google.script.run
-          .withSuccessHandler(tasks => { tasksChanged = true; Swal.close(); showTasksModal(tasks); refreshTaskBadge(); })
-          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
-          .deleteTask(taskId);
-      }
+      if (!result.isConfirmed) return;
+      const previousCache = currentTasksCache;
+      tasksChanged = true;
+      showTasksModal(previousCache.filter(t => t.taskId !== taskId));
+      google.script.run
+        .withSuccessHandler(tasks => { currentTasksCache = tasks || []; refreshTaskBadge(); })
+        .withFailureHandler(err => { showTasksModal(previousCache); Swal.fire('Error', err.message, 'error'); })
+        .deleteTask(taskId);
     });
   };
 
@@ -2343,22 +2365,25 @@
       .listMyTasks();
   }
 
+  let currentMyTasksCache = []; // last-rendered items, for optimistic toggle/delete below
+
   function renderMyTasks(tasks) {
-    document.getElementById('myTasksCount').textContent = tasks.filter(t => !t.done).length;
-    updateTaskBadgeFromTasks(tasks);
+    currentMyTasksCache = tasks || [];
+    document.getElementById('myTasksCount').textContent = currentMyTasksCache.filter(t => !t.done).length;
+    updateTaskBadgeFromTasks(currentMyTasksCache);
     const list = document.getElementById('myTasksList');
-    if (!tasks || tasks.length === 0) {
+    if (currentMyTasksCache.length === 0) {
       list.innerHTML = '<p class="home-empty">No tasks yet - add one from the Tasks action on any Lead, Contact, Account, or Deal.</p>';
       return;
     }
     const todayIso = new Date().toISOString().slice(0, 10);
-    list.innerHTML = tasks.map(t => {
+    list.innerHTML = currentMyTasksCache.map(t => {
       const isOverdue = !t.done && t.dueDate && t.dueDate < todayIso;
       return `
-      <div class="home-row">
-        <input type="checkbox" ${t.done ? 'checked' : ''} onclick="submitToggleTaskDoneGlobal('${escapeHtml(t.taskId)}')" style="flex-shrink:0; width:16px; height:16px; cursor:pointer;">
+      <div class="home-row task-row" data-task-id="${escapeHtml(t.taskId)}">
+        <input type="checkbox" ${t.done ? 'checked' : ''} onchange="submitToggleTaskDoneGlobal(event, '${escapeHtml(t.taskId)}')" style="flex-shrink:0; width:16px; height:16px; cursor:pointer;">
         <div class="home-row-main home-row-clickable" style="flex:1;" onclick="jumpToTaskEntity('${escapeHtml(t.entityType)}', '${escapeHtml(t.entityId)}')">
-          <span style="${t.done ? 'text-decoration:line-through; color:var(--color-text-faint);' : ''}">${escapeHtml(t.title)}</span>
+          <span class="task-row-title" style="${t.done ? 'text-decoration:line-through; color:var(--color-text-faint);' : ''}">${escapeHtml(t.title)}</span>
           <span class="home-tag">${escapeHtml(t.entityType)}: ${escapeHtml(t.entityLabel || t.entityId)}</span>
         </div>
         <span class="home-row-meta ${isOverdue ? 'is-late' : ''}">${t.dueDate ? escapeHtml(t.dueDate) : ''}</span>
@@ -2367,10 +2392,30 @@
     }).join('');
   }
 
-  window.submitToggleTaskDoneGlobal = function(taskId) {
+  // Optimistic, same reasoning as submitToggleTaskDone: flip this row's own styling
+  // instantly instead of a full "Loading tasks..." round-trip through loadMyTasks,
+  // which - like the per-entity modal - stayed invisible for the first 400ms.
+  window.submitToggleTaskDoneGlobal = function(e, taskId) {
+    const cb = e.target;
+    const nowDone = cb.checked;
+    const row = cb.closest('.task-row');
+    const titleEl = row ? row.querySelector('.task-row-title') : null;
+    const setDoneStyle = done => {
+      if (!titleEl) return;
+      titleEl.style.textDecoration = done ? 'line-through' : 'none';
+      titleEl.style.color = done ? 'var(--color-text-faint)' : '';
+    };
+    setDoneStyle(nowDone);
+    const countEl = document.getElementById('myTasksCount');
+    if (countEl) countEl.textContent = Math.max(0, (parseInt(countEl.textContent, 10) || 0) + (nowDone ? -1 : 1));
     google.script.run
-      .withSuccessHandler(() => loadMyTasks())
-      .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
+      .withSuccessHandler(tasks => { currentMyTasksCache = tasks || []; updateTaskBadgeFromTasks(currentMyTasksCache); })
+      .withFailureHandler(err => {
+        cb.checked = !nowDone;
+        setDoneStyle(!nowDone);
+        if (countEl) countEl.textContent = Math.max(0, (parseInt(countEl.textContent, 10) || 0) + (nowDone ? 1 : -1));
+        Swal.fire('Error', err.message, 'error');
+      })
       .toggleTaskDone(taskId);
   };
 
@@ -2383,12 +2428,13 @@
       heightAuto: false,
       scrollbarPadding: false
     }).then(result => {
-      if (result.isConfirmed) {
-        google.script.run
-          .withSuccessHandler(() => loadMyTasks())
-          .withFailureHandler(err => Swal.fire('Error', err.message, 'error'))
-          .deleteTask(taskId);
-      }
+      if (!result.isConfirmed) return;
+      const previousCache = currentMyTasksCache;
+      renderMyTasks(previousCache.filter(t => t.taskId !== taskId));
+      google.script.run
+        .withSuccessHandler(tasks => renderMyTasks(tasks))
+        .withFailureHandler(err => { renderMyTasks(previousCache); Swal.fire('Error', err.message, 'error'); })
+        .deleteTask(taskId);
     });
   };
 

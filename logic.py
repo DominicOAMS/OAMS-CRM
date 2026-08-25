@@ -824,6 +824,39 @@ def listTasksForEntity(entityType, entityId):
     return [r[1] for r in results]
 
 
+def _entity_sales_rep(entity_sheet, ws, row_num):
+    """The Sales Rep already responsible for this record - so a task added on it is
+    owned by whoever actually works it, not whoever happened to click Add Task (e.g. a
+    Manager adding a task on a Lead that belongs to someone on their team). Some
+    Contacts sheets carry their own "Sales Rep" column directly (imported data may
+    already have it); when one doesn't, it's looked up via the Account it's linked to
+    instead - that link column is named "Account" on a freshly-created sheet but
+    "Account Name" on at least one real one, so both are checked. Returns None (caller
+    then falls back to their own name) when nothing above has one set yet."""
+    headers = sheets.header_row(ws)
+    if "Sales Rep" in headers:
+        val = _norm(ws.cell(row_num, headers.index("Sales Rep") + 1).value)
+        if val:
+            return val
+    link_col = next((c for c in ("Account", "Account Name") if c in headers), None) if entity_sheet == "Contacts" else None
+    if link_col:
+        account_name = _strip_link(_norm(ws.cell(row_num, headers.index(link_col) + 1).value))
+        if account_name:
+            acc_ws = sheets.get_worksheet("Accounts")
+            if acc_ws is not None:
+                acc_headers, acc_rows = _read(acc_ws)
+                if "Account Name" in acc_headers and "Sales Rep" in acc_headers:
+                    name_i = acc_headers.index("Account Name")
+                    rep_i = acc_headers.index("Sales Rep")
+                    target = account_name.lower()
+                    for r in acc_rows:
+                        if name_i < len(r) and _norm(r[name_i]).lower() == target:
+                            rep = _norm(r[rep_i]) if rep_i < len(r) else ""
+                            if rep:
+                                return rep
+    return None
+
+
 def addTask(entityType, entityId, entityLabel, title, dueDate):
     if entityType not in ATTACHMENT_ENTITY_SHEETS:
         raise Exception("Invalid entity type: " + str(entityType))
@@ -831,10 +864,12 @@ def addTask(entityType, entityId, entityLabel, title, dueDate):
         raise Exception("A task title is required.")
     entity_sheet, id_col = ATTACHMENT_ENTITY_SHEETS[entityType]
     ews = sheets.get_worksheet(entity_sheet)
-    if ews is None or findRowByIdColumn_(ews, id_col, entityId) == -1:
+    row_num = findRowByIdColumn_(ews, id_col, entityId) if ews is not None else -1
+    if row_num == -1:
         raise Exception("%s not found: %s" % (entityType, entityId))
 
     _, own_rep, _, _ = _viewer_context()
+    owner = _entity_sales_rep(entity_sheet, ews, row_num) or own_rep
 
     getSheetData("Tasks")  # self-heals the sheet into existence via DEFAULT_HEADERS
     addRecordData("Tasks", {
@@ -844,7 +879,7 @@ def addTask(entityType, entityId, entityLabel, title, dueDate):
         "Entity Label": entityLabel or "",
         "Title": title.strip(),
         "Due Date": dueDate or "",
-        "Owner": own_rep,
+        "Owner": owner,
         "Done": "No",
         "Created Time": _now_str(),
     })

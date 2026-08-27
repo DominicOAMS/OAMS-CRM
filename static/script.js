@@ -3123,10 +3123,13 @@
       sel.value = current; // keep selection if still valid
     };
     const reps = (filterOptions && filterOptions.reps) || [];
-    if (window.isAdmin || reps.length > 1) {
+    if (window.isAdmin || window.isManager) {
       // A Manager's reps list is their own name plus their team - getAnalyticsData
       // already refuses anything outside that set server-side, so a real dropdown
       // here is safe; picking nothing shows the whole team's numbers combined.
+      // Checking isManager directly (not reps.length > 1) matters for a Manager whose
+      // team happens to be exactly one person - they still need the real "My whole
+      // team" dropdown, not the plain-rep "Just me" lock below.
       build('analyticsRep', reps, window.isAdmin ? 'All reps' : 'My whole team');
     } else {
       // Plain rep with just their own single name - getAnalyticsData already forces

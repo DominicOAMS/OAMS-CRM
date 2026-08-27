@@ -915,6 +915,25 @@ def _entity_sales_rep(entity_sheet, ws, row_num):
     return None
 
 
+def _task_effective_owner(owner, entityType, entityId):
+    """Falls back to the linked record's own Sales Rep when a Task's stored Owner is
+    blank - covers tasks added before addTask started deriving Owner from the record
+    itself (e.g. one added while logged in as an admin/unconfigured account), so they
+    still show up for the rep actually responsible for that Lead/Account/Deal/Contact
+    instead of silently disappearing from their My Tasks and Calendar."""
+    owner = _norm(owner)
+    if owner or entityType not in ATTACHMENT_ENTITY_SHEETS or not entityId:
+        return owner
+    entity_sheet, id_col = ATTACHMENT_ENTITY_SHEETS[entityType]
+    ws = sheets.get_worksheet(entity_sheet)
+    if ws is None:
+        return owner
+    row_num = findRowByIdColumn_(ws, id_col, entityId)
+    if row_num == -1:
+        return owner
+    return _entity_sales_rep(entity_sheet, ws, row_num) or owner
+
+
 def addTask(entityType, entityId, entityLabel, title, dueDate):
     if entityType not in ATTACHMENT_ENTITY_SHEETS:
         raise Exception("Invalid entity type: " + str(entityType))
@@ -985,18 +1004,21 @@ def listMyTasks():
     is_admin, _, visible_reps, _ = _viewer_context()
     results = []
     for r in rows:
-        owner = r[idx["Owner"]] if "Owner" in idx and idx["Owner"] < len(r) else ""
+        raw_owner = r[idx["Owner"]] if "Owner" in idx and idx["Owner"] < len(r) else ""
+        entity_type = r[idx["Entity Type"]] if "Entity Type" in idx and idx["Entity Type"] < len(r) else ""
+        entity_id = r[idx["Entity ID"]] if "Entity ID" in idx and idx["Entity ID"] < len(r) else ""
+        owner = _task_effective_owner(raw_owner, entity_type, entity_id)
         # Same "don't scope" fallback as getSheetData - an admin sees every task, and so
         # does a non-admin account nobody has assigned a Sales Rep Name to yet. A Manager
         # sees their whole team's tasks here, not just their own - same visible_reps set
         # used everywhere else, since there's no separate "Team Tasks" view.
-        if not is_admin and visible_reps and not any(_norm(owner).lower() == r2.lower() for r2 in visible_reps):
+        if not is_admin and visible_reps and not any(owner.lower() == r2.lower() for r2 in visible_reps):
             continue
         due_ms = _to_ms(r[idx["Due Date"]]) if "Due Date" in idx and idx["Due Date"] < len(r) else None
         results.append((due_ms, {
             "taskId": r[idx["Task ID"]] if "Task ID" in idx else "",
-            "entityType": r[idx["Entity Type"]] if "Entity Type" in idx and idx["Entity Type"] < len(r) else "",
-            "entityId": r[idx["Entity ID"]] if "Entity ID" in idx and idx["Entity ID"] < len(r) else "",
+            "entityType": entity_type,
+            "entityId": entity_id,
             "entityLabel": r[idx["Entity Label"]] if "Entity Label" in idx and idx["Entity Label"] < len(r) else "",
             "title": r[idx["Title"]] if "Title" in idx and idx["Title"] < len(r) else "",
             "dueDate": r[idx["Due Date"]] if "Due Date" in idx and idx["Due Date"] < len(r) else "",
@@ -1618,15 +1640,16 @@ def getCalendarEvents():
         headers, rows = _read(tasks_ws)
         c = {h: i for i, h in enumerate(headers)}
         for row in rows:
-            owner = row[c["Owner"]] if "Owner" in c and c["Owner"] < len(row) else ""
-            if not is_admin and visible_reps and not any(_norm(owner).lower() == r.lower() for r in visible_reps):
+            raw_owner = row[c["Owner"]] if "Owner" in c and c["Owner"] < len(row) else ""
+            entity_type = row[c["Entity Type"]] if "Entity Type" in c and c["Entity Type"] < len(row) else ""
+            entity_id = row[c["Entity ID"]] if "Entity ID" in c and c["Entity ID"] < len(row) else ""
+            owner = _task_effective_owner(raw_owner, entity_type, entity_id)
+            if not is_admin and visible_reps and not any(owner.lower() == r.lower() for r in visible_reps):
                 continue
             due_ms = _to_ms(row[c["Due Date"]]) if "Due Date" in c and c["Due Date"] < len(row) else None
             if due_ms is None:
                 continue
             title = row[c["Title"]] if "Title" in c and c["Title"] < len(row) else "Task"
-            entity_type = row[c["Entity Type"]] if "Entity Type" in c and c["Entity Type"] < len(row) else ""
-            entity_id = row[c["Entity ID"]] if "Entity ID" in c and c["Entity ID"] < len(row) else ""
             entity_label = row[c["Entity Label"]] if "Entity Label" in c and c["Entity Label"] < len(row) else ""
             task_id = row[c["Task ID"]] if "Task ID" in c and c["Task ID"] < len(row) else ""
             done = _norm(row[c["Done"]] if "Done" in c and c["Done"] < len(row) else "").lower() in ("yes", "true", "1")

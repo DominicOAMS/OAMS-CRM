@@ -355,11 +355,13 @@ def getSheetData(sheetName):
     # Manager) in "Sales Rep" - applies automatically to whichever sheet actually has
     # that column (Leads/Contacts/Accounts/Deals today), and to nothing else (e.g.
     # Visits, Attachments, Users, any custom sheet without it), since there's no
-    # ownership signal to check there. Exception: a Manager sees every Lead and every
-    # Account regardless of team (oversight/reassignment needs full visibility there),
-    # even though everywhere else they're still scoped to just their own team.
+    # ownership signal to check there. Exception: a Manager sees every Lead, Account,
+    # and Deal regardless of team (oversight/reassignment needs full visibility there;
+    # this also covers the Kanban board, since getDealsBoard is just getSheetData
+    # under another name) - Contacts and everywhere else (Calendar/Home/Analytics)
+    # still scope to just their own team.
     is_admin, _, visible_reps, is_manager = _viewer_context()
-    manager_sees_all = is_manager and sheetName in ("Leads", "Accounts")
+    manager_sees_all = is_manager and sheetName in ("Leads", "Accounts", "Deals")
     if not is_admin and not manager_sees_all and visible_reps:
         if sheetName == "Contacts":
             # A Contact belongs to whichever Account it's linked to, and that's true

@@ -31,7 +31,7 @@ DEFAULT_HEADERS = {
     "Deals": ["Deal ID", "Deal Name", "Account", "Amount", "Stage", "Sales Rep", "Territory", "Next Follow-up", "Created Time", "Closed Date", "Lost Reason"],
     "Attachments": ["Attachment ID", "Entity Type", "Entity ID", "File Name", "Mime Type", "Size", "Drive File ID", "Drive File URL", "Uploaded Time"],
     "Visits": ["Visit ID", "Entity Type", "Entity ID", "Entity Label", "Account ID", "Account Name", "Visit Date", "Notes", "Logged Time"],
-    "Products": ["Product ID", "Product Name", "SKU", "Unit Price", "Description"],
+    "Products": ["Product ID", "Product Name", "Unit Price"],
     "DealLineItems": ["Line Item ID", "Deal ID", "Product ID", "Product Name", "Quantity", "Unit Price", "Line Total"],
     "Tasks": ["Task ID", "Entity Type", "Entity ID", "Entity Label", "Title", "Due Date", "Owner", "Done", "Created Time"],
 }
